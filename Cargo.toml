@@ -1,0 +1,84 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rill-protocol",
+    "crates/rill-log",
+    "crates/rill-wire",
+    "crates/rill-auth",
+    "crates/rill-store",
+    "crates/rill-pack",
+    "crates/rill-doc",
+    "crates/rill-draw",
+    "crates/rill-app",
+    "crates/rill-appkit",
+    "crates/rill-ui",
+    "crates/rill-gpu",
+    "crates/rill-history",
+    "crates/rill-viewport",
+    "crates/rill-client",
+    "platform/rill",
+    "platform/rill-server",
+    "platform/rill-compositor",
+    "platform/rill-vector",
+    "apps/notes-app",
+    "apps/files-app",
+    "apps/studio-app",
+    "apps/term-app",
+    "apps/edit-app",
+    "apps/launcher-app",
+    "apps/history-app",
+    "apps/meter-app",
+    "apps/ascii-app",
+    "apps/music-app",
+]
+exclude = ["fuzz"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+# Edition 2024 needs 1.85; let-chains in `if x && let Some(y)` need 1.88.
+# Stated so an old toolchain says so, instead of failing somewhere in a
+# parser with an error about the code.
+rust-version = "1.88"
+
+# Every version used by more than one crate lives here, so a bump happens
+# once. The comments explaining *why* a dependency is present stay with the
+# crate that has the reason — this table is versions, not rationale.
+[workspace.dependencies]
+unicode-width = "0.2"
+blake3 = "1"
+# `image` is deliberately absent: ascii-app builds it with only the GIF
+# codec, and a member cannot turn defaults off against a workspace entry
+# that leaves them on — centralizing it would silently pull every codec
+# back into the appliance binary.
+libc = "0.2"
+# Features are deliberately absent: each crate names the ones it actually
+# uses, and inheriting adds to them rather than replacing them.
+tokio = { version = "1" }
+toml = "0.8"
+wayland-client = "0.31"
+wayland-scanner = "0.31"
+wayland-server = "0.31"
+wgpu = "26"
+zstd = "0.13"
+
+# Warnings, not errors, in the manifest: the pre-push hook is what turns them
+# into a gate (`clippy -- -D warnings`), so an in-progress edit stays
+# buildable while a push stays clean.
+[workspace.lints.rust]
+# `unsafe` inside an unsafe fn should still have to say so — this codebase
+# writes SAFETY comments per operation, and the lint keeps that honest.
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Debug builds stay debuggable for our crates, but dependencies (wgpu, the
+# image codecs, cosmic-text) are compiled optimized — unoptimized they make
+# interactive use (resize, scroll) visibly sluggish.
+[profile.dev.package."*"]
+opt-level = 2

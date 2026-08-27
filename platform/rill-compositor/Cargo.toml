@@ -1,0 +1,58 @@
+[package]
+name = "rill-compositor"
+description = "The Rill Wayland compositor: hosts Rill apps and ordinary Wayland clients (nested, Desktop Phase 2)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-log = { path = "../../crates/rill-log" }
+# Nested (winit) backend only — the DRM/udev/libinput backends (bare-metal
+# session) come with milestone 15 and need system libs absent here.
+# The winit backend still wants its GLES renderer type at init, but rendering
+# is wgpu's (W3, specs/wgpu-renderer.md D2) — the EGL context stays dormant.
+smithay = { version = "0.7", default-features = false, features = [
+    "backend_winit",
+    "backend_egl",
+    "renderer_gl",
+    "wayland_frontend",
+    "desktop",
+] }
+rill-gpu = { path = "../../crates/rill-gpu" }
+rill-history = { path = "../../crates/rill-history" }
+rill-ui = { path = "../../crates/rill-ui" }
+# Saved rices (`rices::next`/`load`) for the Ctrl+Shift+R cycle. Light: it
+# carries rill-doc, which the renderer already pulls in, plus toml.
+rill-appkit = { path = "../../crates/rill-appkit" }
+wgpu.workspace = true
+# rill_stream_v1 (protocols/rill-stream-v1.xml): same wayland-server smithay
+# uses (versions unify); scanner generates the server glue at compile time.
+wayland-server.workspace = true
+wayland-scanner.workspace = true
+# Wallpaper decode (compositor paints [desktop] wallpaper since the gpui
+# shell retired).
+# Wallpapers only, and the same reasoning as rill-viewport's entry: the
+# default feature set is fifteen codecs, and the appliance has no business
+# carrying an AV1 encoder to put a picture behind the windows. A wallpaper in
+# an unlisted format now reports an error instead of decoding — the call site
+# already handles that path.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Only to read `[desktop] shader` from theme.toml (the shell owns the rest of
+# the theme; pulling rill-viewport here would drag gpui into the compositor).
+toml.workspace = true
+# Format-preserving edits to theme.toml. `toml` reserializes and would drop
+# the comments out of a hand-written rice file every time a widget is dragged;
+# this rewrites three fields and leaves the rest byte-identical. Already in
+# the tree — `toml` itself is built on it — so this costs no new dependency.
+toml_edit = "0.22"
+# Signal handling only: a recording must survive Ctrl+C (see finish_recording).
+libc.workspace = true
+
+[dev-dependencies]
+# Test-only: the theme-path rule is mirrored from rill-viewport (see
+# `theme_path`), and a mirrored rule needs a tripwire that fails when the
+# two drift apart. Dev-only, so the compositor binary stays free of it.
+rill-viewport = { path = "../../crates/rill-viewport" }
+
+[lints]
+workspace = true

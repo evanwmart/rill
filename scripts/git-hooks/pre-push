@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# Rill pre-push gate — blocks a push if the workspace tests or clippy fail, so
+# you can't push red. This is the local stand-in for CI (see TODO.md P1): solo +
+# a fiddly build env make GitHub Actions premature; this catches the thing that
+# matters — a regression slipping through because someone forgot to run tests.
+#
+# Deliberately bypass (rare, and you know why) with:  git push --no-verify
+#
+# Not gated: `cargo fmt --check`. The tree keeps a hand-tuned style that diverges
+# from rustfmt defaults, so a fmt gate would fight it. Revisit if the project
+# adopts rustfmt.
+set -euo pipefail
+
+REPO="$(git rev-parse --show-toplevel)"
+cd "$REPO"
+
+# Local build workarounds for distributions missing the unversioned .so
+# symlinks. Self-detecting: a no-op where they aren't needed, so this hook
+# behaves the same for a contributor on any distribution.
+. scripts/link-shim.sh
+
+# --locked: the lockfile is a security control, not a convenience. On
+# 2026-08-20 `arrayref` 0.3.10 shipped a malicious build script and was live
+# for 86 minutes; what saved most projects was an older version pinned in a
+# committed lock. Without --locked a build may silently re-resolve, which
+# makes that pin advisory. It also catches a manifest committed without its
+# matching lock entry, which had already happened here once.
+echo "▶ rill pre-push — cargo test --workspace --locked"
+cargo test --workspace --locked --quiet
+
+# --all-targets, so tests, examples, and benches are linted too. Without it
+# clippy checks only the lib/bin targets, and warnings accumulated for months
+# in exactly the files this hook was believed to be covering.
+echo "▶ rill pre-push — cargo clippy --workspace --all-targets --locked (-D warnings)"
+cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+
+# --- dependency advisories -------------------------------------------------
+# Uses the cached advisory DB (-n) so a push works offline and stays fast; the
+# fetching run lives in scripts/fuzz.sh --audit, which is where freshness
+# matters and a failure is a report rather than a blocked push.
+#
+# --deny warnings is safe to gate on because .cargo/audit.toml lists every
+# advisory currently known and un-actionable, each with its reason. So this
+# fires only on something NEW, which is exactly when you want to be stopped.
+if command -v cargo-audit >/dev/null; then
+    echo "▶ rill pre-push — cargo audit (cached db)"
+    cargo audit -n --deny warnings --quiet
+else
+    echo "▶ rill pre-push — cargo audit SKIPPED (cargo install cargo-audit)" >&2
+fi
+
+echo "✓ rill pre-push checks passed"

@@ -1,0 +1,12 @@
+manifest_version = 1
+app_id = "studio"
+name = "Studio"
+entry = "/studio"
+pack = "/apps/studio/app.rillpack"
+
+[window]
+width = 900
+height = 700
+
+[permissions]
+clipboard_write = false

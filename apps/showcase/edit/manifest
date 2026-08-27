@@ -1,0 +1,12 @@
+manifest_version = 1
+app_id = "edit"
+name = "Edit"
+entry = "/edit"
+pack = "/apps/edit/app.rillpack"
+
+[window]
+width = 900
+height = 620
+
+[permissions]
+clipboard_write = false

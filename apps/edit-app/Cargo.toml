@@ -1,0 +1,19 @@
+[package]
+name = "edit-app"
+description = "A plaintext editor over a directory: the tree in the rail, the file in the pane — the second half of the terminal-plus-editor IDE."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+# The code lexer, shared with the client's code surface: the read-only
+# view of an oversized file wears the same colours the editor would.
+rill-ui = { path = "../../crates/rill-ui" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+
+[lints]
+workspace = true

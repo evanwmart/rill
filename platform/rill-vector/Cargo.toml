@@ -1,0 +1,27 @@
+[package]
+name = "rill-vector"
+description = "Vector-native Rill client: delivers its window as a rill_stream_v1 DrawCommand stream — no pixel buffer, no GPU (W4, specs/wgpu-renderer.md)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-log = { path = "../../crates/rill-log" }
+rill-doc = { path = "../../crates/rill-doc" }
+rill-ui = { path = "../../crates/rill-ui" }
+# For the CPU-only text measurer (TextEngine); no device is ever created.
+rill-gpu = { path = "../../crates/rill-gpu" }
+# The full app engine (fetch/state/actions/theme) behind the stream sink.
+rill-viewport = { path = "../../crates/rill-viewport" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+# Dock mode (--dock): the installed-app list and theme.toml edits.
+rill-app = { path = "../../crates/rill-app" }
+rill-client = { path = "../../crates/rill-client" }
+toml.workspace = true
+smithay-client-toolkit = "0.19"
+wayland-client.workspace = true
+wayland-scanner.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

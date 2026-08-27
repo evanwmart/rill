@@ -1,0 +1,23 @@
+[package]
+name = "meter-app"
+description = "Example Rill widget: live system metrics — CPU, memory, storage."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+# statvfs for the storage gauge; the rest of the sampling is /proc text.
+libc.workspace = true
+
+[dev-dependencies]
+# Only to read the data sibling back in tests: the app writes TOML by hand,
+# and a parser it does not use is the honest way to check that it did.
+toml.workspace = true
+
+[lints]
+workspace = true

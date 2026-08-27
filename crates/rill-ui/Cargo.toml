@@ -1,0 +1,15 @@
+[package]
+name = "rill-ui"
+description = "The shared Rill UI core: resolved tree, layout engine, draw commands. Backend-agnostic."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../rill-doc" }
+# The draw-command vocabulary and its codec. This crate produces frames; that
+# one says what a frame is, so a stored frame can be read without it.
+rill-draw = { path = "../rill-draw" }
+
+[lints]
+workspace = true

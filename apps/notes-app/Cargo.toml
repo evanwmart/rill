@@ -1,0 +1,23 @@
+[package]
+name = "notes-app"
+description = "Example Rill application: a notes server with declarative actions."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-server = { path = "../../platform/rill-server" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-doc = { path = "../../crates/rill-doc" }
+# For `compile_page` — the trace/dump hooks every app page goes through.
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-store = { path = "../../crates/rill-store" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+# Reads the data siblings back in tests; the app writes TOML by hand.
+toml.workspace = true
+
+[lints]
+workspace = true

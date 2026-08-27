@@ -1,0 +1,16 @@
+[package]
+name = "rill-auth"
+description = "Rill identity and authorization: device fingerprints, TLS configuration, deny-by-default policy."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+sha2 = "0.10"
+toml.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "rill-viewport"
+description = "Embeddable Rill application surface: fetch, render, interact. Backend-agnostic; hosted by rill-vector and the compositor."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-log = { path = "../rill-log" }
+rill-protocol = { path = "../rill-protocol" }
+rill-doc = { path = "../rill-doc" }
+rill-ui = { path = "../rill-ui" }
+rill-app = { path = "../rill-app" }
+rill-client = { path = "../rill-client" }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "net", "io-util", "sync", "fs"] }
+futures = "0.3"
+# Codecs named rather than defaulted, because this is the *remotely reachable*
+# image parser: a served document's `image "/assets/x"` is fetched from
+# whatever app served the page and handed to `load_from_memory`, which sniffs
+# the format — so every enabled codec is one an author elsewhere can select.
+# The defaults enable fifteen, including `avif`, which pulls rav1e (a whole
+# AV1 *encoder*, 49 crates) to decode something nothing here encodes.
+# MEASURED: this list takes rill-vector from 258 crates to 211.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+toml.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+// The packed page of an otherwise live app.
+style "page" padding="xl" gap="md"
+style "title" size=20 weight="bold" color="text"
+style "muted" color="text-muted" size=13
+
+column style="page" {
+    text "Apps" style="title"
+    text "Every published application, as a grid: search it, click it, it launches."
+    text "Tiles launch by app id — the device resolves against its own installs." style="muted"
+    link "Open the menu" target="/launcher"
+}

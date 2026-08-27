@@ -1,0 +1,31 @@
+/target
+fuzz/target/
+
+# Showcase build output (apps/showcase/build.sh)
+showcase-out/
+
+# Benchmark bundles are evidence about one machine at one moment, not
+# source. They are meant to be read, compared and quoted from — and, when a
+# run matters, copied into docs/memory-footprint.md as a dated entry rather
+# than committed wholesale.
+bench-results/
+
+# Screen recordings. Gigabyte-scale and not source: the showcase videos live
+# here so they are easy to hand to an encoder, and must never enter history —
+# git keeps a blob forever, so one `git add -A` would be permanent.
+# Anchored: `showcase/` unanchored also matches apps/showcase, which is
+# source and must stay tracked.
+/showcase/
+
+# Stray `rill get` output. Fetching without -o writes the resource to the
+# working directory, which is how `ok` and `music` once appeared at the root.
+/ok
+/music
+
+# Local tooling experiments and editor/agent configs — machine-local, never
+# source. The rust-audit files are a local-LLM code-review experiment.
+/.audit-tmp/
+/audit-rust.sh
+/rust-audit-report.md
+/rust-files*.txt
+/opencode.json

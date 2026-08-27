@@ -1,0 +1,13 @@
+manifest_version = 1
+app_id = "launcher"
+name = "Apps"
+entry = "/launcher"
+pack = "/apps/launcher/app.rillpack"
+icon = "grid"
+
+[window]
+width = 640
+height = 480
+
+[permissions]
+clipboard_write = false

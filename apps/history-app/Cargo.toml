@@ -1,0 +1,22 @@
+[package]
+name = "history-app"
+description = "The machine's memory as an app: timeline, search, and the agent's context view over the semantic history."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+# The substrate this app is a client of — same corpus the CLI and, later,
+# the agent surface read (specs/history.md: "the history app, the agent
+# surface, and compliance export are all clients").
+rill-history = { path = "../../crates/rill-history" }
+# localtime_r for the entry stamps, the same way the dock reads its clock.
+libc.workspace = true
+
+[lints]
+workspace = true

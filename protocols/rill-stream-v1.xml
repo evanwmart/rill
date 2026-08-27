@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="rill_stream_v1">
+  <copyright>
+    Rill command-stream protocol (specs/wgpu-renderer.md W4/D4).
+    MIT OR Apache-2.0.
+  </copyright>
+
+  <description summary="vector-native window content">
+    Lets a client deliver its window content as a Rill DrawCommand stream
+    (the rill_ui::stream binary encoding) instead of a pixel buffer. The
+    surface stays an ordinary xdg_toplevel for window management; only the
+    content path changes. Frames are passed as memfds (the wl_shm bulk
+    pattern) and latch on wl_surface.commit, so a frame and the surface
+    state it belongs to are one atomic transaction.
+  </description>
+
+  <interface name="rill_stream_manager_v1" version="3">
+    <description summary="stream manager">
+      Global for turning a wl_surface into a vector-native surface.
+
+      Version 2 adds rill_stream_v1.attach_image. The version lives here as
+      well as on the stream because a stream inherits the version of the
+      manager that created it — a v1 manager can only ever make a v1 stream,
+      whatever the stream interface itself declares.
+    </description>
+
+    <enum name="error">
+      <entry name="stream_exists" value="0"
+             summary="the surface already has a stream object"/>
+    </enum>
+
+    <request name="get_stream">
+      <description summary="create a stream for a surface">
+        Bind a command stream to the surface. One stream per surface.
+      </description>
+      <arg name="id" type="new_id" interface="rill_stream_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Existing stream objects survive the manager.
+      </description>
+    </request>
+  </interface>
+
+  <interface name="rill_stream_v1" version="3">
+    <description summary="a surface's command stream">
+      Carries encoded DrawCommand frames for one surface, and the raster
+      images those frames refer to.
+
+      A frame names an image by its source string and never carries its
+      pixels: a command stream is kilobytes and stays kilobytes, which is
+      the whole reason it exists. Pixels travel out of band, once per
+      source, through attach_image — the same sealed-memfd handoff a frame
+      uses, on the same connection, bound to the same surface.
+
+      The client resolves images, not the compositor. It already must: the
+      layout box comes from the image's natural size, so the client has
+      fetched and decoded the image before it can emit a frame mentioning
+      it. Resolving them a second time in the compositor would need
+      credentials the compositor does not have and should not be given —
+      it would be a desktop-wide deputy that any client could aim at any
+      path by naming it in a document, and the render-or-placeholder
+      outcome would report whether that path exists.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_stream" value="0"
+             summary="the attached bytes failed strict decoding"/>
+      <entry name="oversized" value="1"
+             summary="the attached frame exceeds the stream size cap"/>
+      <entry name="image_malformed" value="2"
+             summary="image size does not match width * height * 4"/>
+      <entry name="image_budget" value="3"
+             summary="the surface's image memory budget is exhausted"/>
+    </enum>
+
+    <request name="attach">
+      <description summary="stage the next frame">
+        Stage an encoded frame. The fd is read immediately (size bytes);
+        the frame becomes the surface content on the next
+        wl_surface.commit. width and height are the logical size the frame
+        was laid out for.
+      </description>
+      <arg name="fd" type="fd"/>
+      <arg name="size" type="uint"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+    </request>
+
+    <request name="attach_image" since="2">
+      <description summary="supply the pixels for one image source">
+        Give the compositor the decoded pixels behind one image source, so
+        that DrawCommand::Image referring to `source` paints rather than
+        showing the placeholder box.
+
+        `fd` holds raw RGBA8, top-left origin, tightly packed: `size` must
+        equal width * height * 4 exactly, or the compositor raises
+        image_malformed. Raw, not an encoded format, deliberately — the
+        compositor decoding client-supplied PNGs would put an image codec
+        on the path of untrusted bytes, and the client has the decoded
+        pixels already.
+
+        `source` is the same string the frame's Image command carries, and
+        is scoped to this stream: two surfaces naming "/logo.png" are
+        naming their own, which is right, because they may be talking to
+        different servers.
+
+        Sent once per source, not per frame. The compositor uploads the
+        pixels to a texture and drops the CPU copy; the client may then
+        drop its own. Re-attaching the same source replaces it — that is
+        how an image that changed is updated.
+
+        Images are held against a per-surface byte budget. When it is
+        reached the compositor releases images the current frame does not
+        name, least recently used first, and says so with image_released.
+        image_budget is raised only when even that is not enough — a single
+        frame naming more pixels than the budget allows. All of a surface's
+        images are released when its stream is destroyed.
+      </description>
+      <arg name="fd" type="fd"/>
+      <arg name="size" type="uint"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="source" type="string"/>
+    </request>
+
+    <event name="image_released" since="2">
+      <description summary="an image is gone and must be sent again to reappear">
+        The compositor has dropped the pixels for `source`. A frame naming
+        it now paints the placeholder box until the client attaches it
+        again.
+
+        This is what makes the budget survivable. Without it the choice at
+        the cap is between refusing new images — so a window that browses
+        enough pictures stops showing them permanently — and evicting
+        silently, which is a picture that vanishes and never returns. A
+        client that hears this simply forgets having sent it, and the next
+        frame that needs it sends it again.
+
+        Only images the current frame does not name are released, so this
+        does not arrive for something on screen and cannot become a
+        release/re-attach loop.
+      </description>
+      <arg name="source" type="string"/>
+    </event>
+
+    <request name="set_tier" since="3">
+      <description summary="classify what this surface shows from now on">
+        The sensitivity tier the surface's content records at in the
+        semantic history, as the shown document declared it
+        (specs/history.md decision 4: the document is the app's only
+        channel to its viewer; this request is the client→compositor leg).
+
+        Latched with the next attach: the tier applies to that frame and
+        every one after it, until changed. Send before the frame it
+        classifies — a tier that arrives after the frame has classified
+        the wrong content.
+
+        `tier` is the closed set the history format knows (0 routine,
+        1 sensitive, 2 sealed). A value outside it raises invalid_stream:
+        an unknown-but-higher tier must fail closed, never record as
+        routine.
+
+        The fail-closed rule binds both ends. A client whose document
+        declares a tier and whose compositor predates this request must
+        not attach the frame at all — sending it would record classified
+        content at tier 0, which is the exact failure this request exists
+        to prevent.
+      </description>
+      <arg name="tier" type="uint"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop streaming">
+        The surface reverts to ordinary buffer content.
+      </description>
+    </request>
+  </interface>
+</protocol>

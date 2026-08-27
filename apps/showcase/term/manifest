@@ -1,0 +1,12 @@
+manifest_version = 1
+app_id = "term"
+name = "Terminal"
+entry = "/term"
+pack = "/apps/term/app.rillpack"
+
+[window]
+width = 760
+height = 560
+
+[permissions]
+clipboard_write = false

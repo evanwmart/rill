@@ -1,0 +1,16 @@
+[package]
+name = "rill-app"
+description = "The Rill application runtime foundation: manifests, identity, the install store, staged updates."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-protocol = { path = "../rill-protocol" }
+rill-store = { path = "../rill-store" }
+rill-pack = { path = "../rill-pack" }
+rill-doc = { path = "../rill-doc" }
+toml.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "rill-pack"
+description = "The .rillpack format: build, read, extract, and verify deterministic resource bundles."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-protocol = { path = "../rill-protocol" }
+rill-store = { path = "../rill-store" }
+
+[lints]
+workspace = true

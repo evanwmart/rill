@@ -1,0 +1,23 @@
+[package]
+name = "rill-server"
+description = "Rill network server: serves a directory tree over the Rill protocol."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-log = { path = "../../crates/rill-log" }
+# mallopt/malloc_trim: bounding glibc arenas bounds the footprint.
+libc.workspace = true
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-wire = { path = "../../crates/rill-wire" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-store = { path = "../../crates/rill-store" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs", "sync"] }
+
+[dev-dependencies]
+rill-client = { path = "../../crates/rill-client" }
+tempfile = "3"
+
+[lints]
+workspace = true

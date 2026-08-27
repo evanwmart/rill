@@ -1,0 +1,24 @@
+[package]
+name = "rill"
+description = "Rill command-line client."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Only to restore SIGPIPE default disposition (a closed pipe ends the
+# process quietly instead of panicking mid-print).
+libc = "0.2"
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-client = { path = "../../crates/rill-client" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-store = { path = "../../crates/rill-store" }
+rill-pack = { path = "../../crates/rill-pack" }
+rill-doc = { path = "../../crates/rill-doc" }
+rill-app = { path = "../../crates/rill-app" }
+rill-ui = { path = "../../crates/rill-ui" }
+rill-history = { path = "../../crates/rill-history" }
+tokio = { workspace = true, features = ["rt", "time", "net", "io-util"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "files-app"
+description = "Example Rill application: browse the served namespace, filtered by policy."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-server = { path = "../../platform/rill-server" }
+# mallopt: bounding glibc arenas is part of bounding the footprint.
+libc.workspace = true
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+studio-app = { path = "../studio-app" }
+term-app = { path = "../term-app" }
+meter-app = { path = "../meter-app" }
+history-app = { path = "../history-app" }
+edit-app = { path = "../edit-app" }
+launcher-app = { path = "../launcher-app" }
+ascii-app = { path = "../ascii-app" }
+music-app = { path = "../music-app" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

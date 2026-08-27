@@ -1,0 +1,12 @@
+manifest_version = 1
+app_id = "music"
+name = "Music"
+entry = "/music"
+pack = "/apps/music/app.rillpack"
+
+[window]
+width = 820
+height = 560
+
+[permissions]
+clipboard_write = false

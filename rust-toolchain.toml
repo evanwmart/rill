@@ -1,0 +1,17 @@
+# The toolchain is a build input like any other, and this project cross-builds
+# an appliance image — so "whatever rustc happened to be installed" is a gap in
+# the same reproducibility story that `Cargo.lock` and `--locked` cover for
+# dependencies.
+#
+# Pinning also makes a toolchain bump a *reviewable event*. Moving 1.94 → 1.98
+# introduced four new clippy lints across eight sites; with the pre-push gate
+# running `-D warnings`, that arrived as a wall of failures on unrelated work.
+# Changing this file is now the moment to expect that, rather than a Tuesday.
+#
+# `workspace.package.rust-version = "1.88"` still states the *floor* a
+# consumer needs. This states what we build with.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+# Fuzzing needs nightly and asks for it explicitly (`cargo +nightly fuzz`),
+# so it is deliberately not listed here.

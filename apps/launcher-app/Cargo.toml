@@ -1,0 +1,17 @@
+[package]
+name = "launcher-app"
+description = "The app menu as an app: the published applications as an icon grid with categories and search, launching by app id."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+toml.workspace = true
+
+[lints]
+workspace = true

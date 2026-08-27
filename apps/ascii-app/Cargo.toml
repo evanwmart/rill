@@ -1,0 +1,21 @@
+[package]
+name = "ascii-app"
+description = "Example Rill widget: ASCII/GIF art rendered as a document."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+toml.workspace = true
+# GIF decode only. Default features would drag in every codec image knows;
+# a widget that plays animations needs exactly one, and the binary is part
+# of the appliance image.
+image = { version = "0.25", default-features = false, features = ["gif"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+style "title" size=15 color="text"
+style "muted" color="text-muted" size=11
+
+column gap=6 padding=12 {
+	text "Music" style="title"
+	text "A library browser and player. Playback happens on the server's default sink — the same machine as this desktop — and the compositor's audio tap turns it into wallpaper: every sound-reactive shader moves to whatever is playing. Served live at /music." style="muted"
+	link "Open the player" target="/music"
+}

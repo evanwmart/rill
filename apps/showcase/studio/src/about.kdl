@@ -1,0 +1,8 @@
+style "title" size=15 color="text"
+style "muted" color="text-muted" size=11
+
+column gap=6 padding=12 {
+	text "Theme Studio" style="title"
+	text "Adjust the desktop's density (F/P) and palette tokens. Served live at /studio; this page only ships with the pack." style="muted"
+	link "Open the studio" target="/studio"
+}

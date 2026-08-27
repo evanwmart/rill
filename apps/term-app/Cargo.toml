@@ -1,0 +1,30 @@
+[package]
+name = "term-app"
+description = "Example Rill application: a terminal whose screen *is* a Rill document."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+# Reading the theme's [colors] table to see which ANSI names it declares.
+toml.workspace = true
+# A character's cell width is a property of the character, not a guess.
+unicode-width.workspace = true
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+# The escape-sequence state machine only. Everything a terminal *is* — the
+# grid, the cursor, the attributes, the rendering — is ours; what vte does is
+# the one part that is a long, exactly-specified table anyone would get wrong
+# the same way twice.
+vte = "0.15"
+libc.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+rill-viewport = { path = "../../crates/rill-viewport" }
+rill-ui = { path = "../../crates/rill-ui" }

@@ -1,0 +1,41 @@
+# Cross-compilation image for the Raspberry Pi bench target.
+#
+# Debian 13 (trixie) on purpose: it is what the Pi runs, so the glibc the
+# binaries are linked against is the glibc they will meet. Debian's multiarch
+# also makes the target-architecture dev packages a one-liner, which the
+# older cross-rs images (Ubuntu 20.04) do not — and those are additionally
+# too old to host a current rustc's build scripts, which is the wall the
+# `cross` route hits first.
+#
+# The workspace links against very little: `ldd` on the built binaries shows
+# only libxkbcommon beyond libc/libm/libgcc, because Wayland, Vulkan, EGL and
+# GBM are all dlopened at runtime. The *linker* still wants the unversioned
+# .so names present, which is what these -dev packages provide (the same job
+# the openSUSE libshim does in demo-desktop.sh).
+FROM debian:trixie
+
+ARG RUST_VERSION=1.98.0
+
+RUN dpkg --add-architecture arm64 && apt-get update && apt-get install --assume-yes --no-install-recommends \
+        ca-certificates curl build-essential pkg-config git \
+        gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
+        libxkbcommon-dev:arm64 libxkbcommon-x11-dev:arm64 \
+        libwayland-dev:arm64 \
+        libegl-dev:arm64 libgles-dev:arm64 libgl-dev:arm64 \
+        libgbm-dev:arm64 \
+        libasound2-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal \
+        --default-toolchain ${RUST_VERSION} --target aarch64-unknown-linux-gnu \
+    && chmod -R a+w $RUSTUP_HOME $CARGO_HOME
+
+# Link with the aarch64 toolchain, and let pkg-config see the target sysroot.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
+    PKG_CONFIG_ALLOW_CROSS=1 \
+    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
+    PKG_CONFIG_SYSROOT_DIR=/

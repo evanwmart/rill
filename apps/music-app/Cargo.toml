@@ -1,0 +1,20 @@
+[package]
+name = "music-app"
+description = "Example Rill application: a music player whose playback runs server-side."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+# Decode + output. Playback happens in the *server* process — the same
+# machine as the desktop on the demo appliance, stated in the app's docs,
+# exactly the assumption the terminal makes about whose shell it spawns.
+rodio = "0.22"
+
+[lints]
+workspace = true

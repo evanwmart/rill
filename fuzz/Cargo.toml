@@ -1,0 +1,55 @@
+[package]
+name = "rill-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rill-protocol = { path = "../crates/rill-protocol" }
+rill-ui = { path = "../crates/rill-ui" }
+rill-doc = { path = "../crates/rill-doc" }
+rill-pack = { path = "../crates/rill-pack" }
+rill-store = { path = "../crates/rill-store" }
+rill-history = { path = "../crates/rill-history" }
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stream_decode"
+path = "fuzz_targets/stream_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "doc_decode"
+path = "fuzz_targets/doc_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pack_open"
+path = "fuzz_targets/pack_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "segment_read"
+path = "fuzz_targets/segment_read.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

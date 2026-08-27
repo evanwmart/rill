@@ -1,0 +1,16 @@
+[package]
+name = "rill-appkit"
+description = "The shared app shell: the TopBar + Sidebar vocabulary, its style table, and the KDL builders every Rill app composes its pages from."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../rill-doc" }
+# For `Status` — `compile_page` returns what an app handler returns, so the
+# apps do not each restate the mapping from a compile failure to a wire status.
+rill-protocol = { path = "../rill-protocol" }
+toml.workspace = true
+
+[lints]
+workspace = true

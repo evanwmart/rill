@@ -1,0 +1,8 @@
+style "title" size=15 color="text"
+style "muted" color="text-muted" size=11
+
+column gap=6 padding=12 {
+	text "Terminal" style="title"
+	text "A shell on a pseudoterminal, rendered as a document. The page asks for the keyboard and reloads itself on a clock; nothing about it is a client-side capability. Served live at /term." style="muted"
+	link "Open the terminal" target="/term"
+}

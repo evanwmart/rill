@@ -1,0 +1,37 @@
+[package]
+name = "rill-history"
+description = "Semantic history: the .rhs segmented log — event codec, chunked writer, crash-honest reader (specs/history.md)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Encryption at rest (specs/history.md decision 2): XChaCha20-Poly1305 for
+# chunks, keyslots and index blobs. Pure Rust, RustCrypto's audited AEAD.
+chacha20poly1305 = "0.10"
+# OS randomness for data keys and nonces — nothing else in this crate may
+# need entropy, and a DIY nonce is how AEADs die.
+getrandom = "0.3"
+# Frame blobs are stored verbatim and decoded to extract the transcript.
+# rill-draw, not rill-ui: this crate is a durable log, and reaching up into
+# the layout engine meant compiling a KDL parser, a text shaper and the icon
+# set to call one decode(). A `.rhs` file holds rill-draw blobs — that is the
+# whole of the dependency, and it is the sentence the format wants to be true.
+rill-draw = { path = "../rill-draw" }
+# For `encoding::decompress` — the capped decoder. A segment is read back as
+# untrusted input (they are meant to be shared), so chunks decompress against
+# a ceiling rather than into whatever the stream expands to.
+rill-store = { path = "../rill-store" }
+zstd.workspace = true
+blake3.workspace = true
+# malloc_trim after a seal — see seal_path_with; gnu-linux only, cfg-gated.
+libc.workspace = true
+
+[dev-dependencies]
+# Only the convert-rillrec example, which reads the *other* recording format
+# and so genuinely needs its codec. A dev-dependency, so the library itself
+# still builds without the presentation layer anywhere in its tree.
+rill-ui = { path = "../rill-ui" }
+
+[lints]
+workspace = true

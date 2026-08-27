@@ -1,0 +1,9 @@
+[package]
+name = "rill-log"
+description = "The shared log vocabulary: levelled stderr lines for humans, and an opt-in JSONL dev trail that merges every process's events into one ordered stream for debugging."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

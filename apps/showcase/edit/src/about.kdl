@@ -1,0 +1,13 @@
+// The packed page of an otherwise live app: the editor itself is generated
+// by the server from the directory as it stands; this part never changes.
+style "page" padding="xl" gap="md"
+style "title" size=20 weight="bold" color="text"
+style "muted" color="text-muted" size=13
+style "back" color="accent" size=13 underline=#false
+
+column style="page" {
+    text "Edit" style="title"
+    text "A plaintext editor over your home directory: the file tree in the rail, the open file in the pane, Save writes it back."
+    text "Beside a terminal, this is the whole IDE thesis: run things in one window, change them in the other." style="muted"
+    link "Open the editor" target="/edit" style="back"
+}

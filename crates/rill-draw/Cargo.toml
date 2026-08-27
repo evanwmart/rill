@@ -1,0 +1,15 @@
+[package]
+name = "rill-draw"
+description = "The draw-command vocabulary and its wire codec: what a window is made of, and the bytes it travels as."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# For `ActionValue` only — a draw command can carry a declared action, and the
+# value vocabulary is the protocol's. Nothing else: this crate is the shape of
+# a frame, not a client of anything.
+rill-protocol = { path = "../rill-protocol" }
+
+[lints]
+workspace = true

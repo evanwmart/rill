@@ -1,0 +1,39 @@
+[package]
+name = "rill-gpu"
+description = "The Rill-owned wgpu renderer: executes DrawCommands on a wgpu device (no gpui). The endgame backend behind rill-ui — see specs/wgpu-renderer.md."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Cell counts for the mono grid: a character's width is a property of the character.
+unicode-width.workspace = true
+rill-ui = { path = "../rill-ui" }
+rill-doc = { path = "../rill-doc" }
+wgpu.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+# Same version gpui locks, so both backends shape identically during cutover.
+cosmic-text = "0.14"
+# The rasterizer cosmic-text already uses, taken as a direct dependency so we
+# can drive the `wght` variation axis ourselves. cosmic-text 0.14 builds its
+# scaler without variation settings, which is why a variable font rendered
+# only at its default instance; see `atlas::variable_image`. Must stay on the
+# version cosmic-text locks — the `FontRef` we hand it comes from there.
+swash = "0.2"
+# Not used directly — aligns naga's own `termcolor` cfg with the
+# `codespan-reporting/termcolor` feature that gpui's blade-graphics enables on
+# the shared codespan-reporting. Without this, feature unification puts naga 26
+# in its no-termcolor branch against a termcolor-enabled codespan and it fails
+# to compile (missing `String: WriteColor`). Drop when gpui/blade leaves.
+naga = { version = "26", features = ["termcolor"] }
+# Raw Vulkan for dmabuf import/export (same version wgpu-hal locks).
+ash = "0.38"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The grid proof drives a real document through a real engine.
+rill-viewport = { path = "../rill-viewport" }
+rill-doc = { path = "../rill-doc" }

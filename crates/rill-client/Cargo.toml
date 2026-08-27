@@ -1,0 +1,16 @@
+[package]
+name = "rill-client"
+description = "Rill client library: address parsing, connections, requests."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-protocol = { path = "../rill-protocol" }
+rill-wire = { path = "../rill-wire" }
+rill-auth = { path = "../rill-auth" }
+rill-store = { path = "../rill-store" }
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
+
+[lints]
+workspace = true

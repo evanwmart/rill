@@ -1,0 +1,78 @@
+# rill-green — the out-of-box candidate (Evan, 2026-08-21).
+#
+# Deliberately the cheapest possible default: no shaders, no wallpaper asset,
+# a flat green field and greyscale chrome in a few hundred bytes of TOML.
+# Square corners, hard dark-green shadows, accent pulled from the field so
+# links and focus read as interactive against the grey.
+
+[colors]
+accent = "#37b86b"
+accent-text = "#131313"
+border = "#3a3a3a"
+page = "#202020"
+surface = "#0a0a0a"
+surface-raised = "#282828"
+text = "#ececec"
+text-muted = "#969696"
+
+# The terminal's sixteen, derived from the accent, the page and the text
+# (Studio → Colors → Terminal palette). Ordinary theme colours once
+# written: edit any of them by hand, or drop the block to go back to the
+# terminal's stock palette.
+ansi-black = "#2c2c2c"
+ansi-red = "#b83737"
+ansi-green = "#37b85d"
+ansi-yellow = "#b89837"
+ansi-blue = "#3762b8"
+ansi-magenta = "#a337b8"
+ansi-cyan = "#37b4b8"
+ansi-white = "#c7c7c7"
+ansi-bright-black = "#5d5d5d"
+ansi-bright-red = "#ce6e6e"
+ansi-bright-green = "#6ece8a"
+ansi-bright-yellow = "#ceb66e"
+ansi-bright-blue = "#6e8ece"
+ansi-bright-magenta = "#be6ece"
+ansi-bright-cyan = "#6ecbce"
+ansi-bright-white = "#ececec"
+
+[cursor]
+color = "#f5f5f5"
+outline = "#2e4c10"
+shadow = 255.0
+size = 24.0
+
+[desktop]
+background_color = "#104c2e"
+
+[desktop.ascii]
+align = "center"
+art = "cube"
+color = "accent"
+seconds = 0.2
+
+[desktop.dock]
+center = ["clock"]
+clock = "12h"
+clock_date = true
+corner = 0.0
+gap = 10.0
+height = 40.0
+icon = 26.0
+left = ["menu"]
+padding = 7.0
+
+[metrics]
+font_size = 14.0
+mono_weight = 600
+padding = 6.0
+
+[window]
+chrome_alpha = 60.0
+focus_glow = "#f5f5f5"
+focus_glow_alpha = 255.0
+focus_glow_blur = 6.0
+radius = 0.0
+shadow_alpha = 255.0
+shadow_blur = 0.0
+shadow_color = "#0a2f1c"

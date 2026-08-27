@@ -1,0 +1,43 @@
+# cargo-audit configuration.
+#
+# The point of the ignore list is NOT to silence advisories — it is to make a
+# *new* one impossible to miss. Every entry below has been traced to its
+# source and found un-actionable today; anything not on the list is news, and
+# `scripts/fuzz.sh --audit` treats it as a failure.
+#
+# Re-check the list whenever a dependency moves. An entry that has become
+# fixable is a bug in this file.
+#
+# Full reasoning: docs/dependency-audit.md
+
+[advisories]
+ignore = [
+    # --- pinned by the smithay/winit stack, not by us ------------------
+    # winit 0.30.13 requires smithay-client-toolkit ^0.19.2 and calloop
+    # ^0.13.0, and smithay 0.7.0 (latest) depends on that winit. Raising our
+    # own sctk dependency would add a SECOND copy rather than replacing the
+    # old one, so these clear when smithay updates winit and not before.
+    "RUSTSEC-2026-0186", # memmap2 0.8.0 unsound — via sctk 0.19 → xkbcommon 0.7
+    "RUSTSEC-2026-0196", # cgmath unmaintained — inside smithay itself
+    # cgmath's unsoundness is also unreachable here: it needs
+    # Matrix{2,3,4}::swap_columns with two identical indices, and smithay
+    # never calls swap_columns. No fixed version exists (patched = []).
+    "RUSTSEC-2026-0197", # cgmath unsound
+
+    # --- the font stack ------------------------------------------------
+    # cosmic-text 0.19 replaces rustybuzz with harfrust, so this one is
+    # fixable — but the same upgrade swaps swash for skrifa, and rill-gpu
+    # drives the `wght` variation axis through swash itself. Costed in the
+    # audit doc §3.5: worth doing, not worth doing casually.
+    "RUSTSEC-2026-0206", # rustybuzz unmaintained — via cosmic-text 0.14
+    # ttf-parser persists even after that upgrade: cosmic-text 0.19 → fontdb
+    # ^0.23 still requires ttf-parser ^0.25, and the advisory has
+    # patched = [] so every version is flagged. Nothing to upgrade toward.
+    "RUSTSEC-2026-0192", # ttf-parser unmaintained
+
+    # --- not in the Linux build at all ---------------------------------
+    # `paste` left the linux-gnu graph when the image codec set was narrowed
+    # (it arrived via exr → pulp). It remains in Cargo.lock only for macOS,
+    # reached through `metal`, because the lock covers every target.
+    "RUSTSEC-2024-0436", # paste unmaintained
+]

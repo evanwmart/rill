@@ -1,0 +1,16 @@
+[package]
+name = "rill-doc"
+description = "The Rill binary document format: KDL compilation, encoding, decoding, validation."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-protocol = { path = "../rill-protocol" }
+# `Color` and MIN_LIVE_INTERVAL_MS live with the draw vocabulary — a document
+# names a colour, a frame carries one — and are re-exported from here.
+rill-draw = { path = "../rill-draw" }
+kdl = "6"
+
+[lints]
+workspace = true

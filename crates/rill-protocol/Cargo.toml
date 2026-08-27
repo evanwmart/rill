@@ -1,0 +1,12 @@
+[package]
+name = "rill-protocol"
+description = "Rill wire format: frame types and byte encoding. Sans-I/O."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Intentionally none. This crate is pure `bytes ↔ Rust values`.
+
+[lints]
+workspace = true
