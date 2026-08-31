@@ -1,6 +1,7 @@
 # Lineage — the philosophy Rill keeps rediscovering
 
-Status: **reference essay**, 2026-08-17. Not a spec and not load-bearing;
+Status: **reference essay**, 2026-08-17, systems shelf added 2026-08-30.
+Not a spec and not load-bearing;
 this exists so the project can state its intellectual position precisely,
 learn from how each ancestor failed, and recognize the pattern when it
 appears outside computing. Companion to
@@ -83,6 +84,94 @@ wire format" makes the derived artifact the primary artifact. Screen
 recording, automation, and agent frameworks are the same story: five
 industries reconstructing semantics the source had and discarded at the
 pixel boundary.
+
+## The systems shelf (what Rill will be compared to)
+
+The section above traces the *philosophy*; this one takes the five
+concrete systems a skeptical reader will reach for, and states the
+inheritance and the divergence precisely. Each pairing follows the same
+shape: what the ancestor proved, how its implementation betrayed its
+goal, and which structural change Rill makes so the same betrayal is
+unavailable.
+
+**X11 (1984) — drawing intent on the wire, at the wrong altitude, with
+no policy.** X proved a display could be a network protocol, then made
+two choices that undid it. "Mechanism, not policy" pushed every semantic
+— widgets, text, even what a titlebar is — out to toolkits, so the
+server understood nothing it displayed; and its immediate-mode drawing
+vocabulary was optional, so toolkits eventually rendered client-side and
+shipped pixels through it (`XPutImage`), quietly killing the network
+transparency X existed for. Add a trust model where any client can read
+any other's input and forty years of extension accretion, and the lesson
+is exact: *an optional semantic vocabulary always rots to pixels.* Rill
+inverts all three choices — the scene is retained and semantic, policy
+(theming, focus, chrome) is the platform's, and for vector-native apps
+the vocabulary is not optional because there is no pixel path beside it.
+The isolation comes from the Wayland substrate X never had.
+
+**HyperCard (1987) — documents as software, with no network and no
+floor.** Atkinson erased the document/program boundary from the
+authoring side: a stack was the thing you used and the thing you opened
+up and changed, with a graded slope (browse → type → paint → author →
+script) that turned users into makers by degrees. It lacked everything
+Rill leads with — networking, identity, any limit on what HyperTalk
+could do to the machine — and it died anyway of corporate neglect, not
+of its model. Rill keeps the erased boundary and supplies the missing
+half: pairwise trust, content addressing, and a capability floor in
+place of an unlimited scripting ceiling. The honest asymmetry runs the
+other way: HyperCard's authoring slope — the part that mattered most —
+is the part Rill has not yet built, and `rill preview` is only its first
+rung.
+
+**Plan 9 (circa 1990) — one small protocol, one level too low.** Plan 9
+proved a single spare protocol (9P) plus per-process namespaces could
+carry an entire distributed system, and it remains the most coherent
+answer ever shipped to "the network is part of the computer." But it
+unified at the *file*: bytes any program could read and no program
+could understand — the display itself (`/dev/draw`) was still a pixel
+channel wearing a file mask, and names were locations, not content.
+Rill takes the "one small vocabulary, uniformly applied" discipline and
+moves it up to the scene, where the tokens carry meaning every consumer
+shares; naming moves from paths to hashes, and trust from lab-machine
+assumptions to per-device identity. Plan 9's fate teaches the other
+lesson Rill acts on: a coherent system with an empty desktop loses to an
+incoherent one with software — which is what the foreign-window path is
+for. Coherence for the natives, a ford for everyone else.
+
+**VNC (1998) — interpretation collapsed all the way.** RFB is the
+limit case of "collapse early" from the section below: the wire is a
+framebuffer, deliberately semantics-free, which is precisely why it
+works with everything and understands nothing. No reflow, no retheme,
+no search, no accessibility, bandwidth proportional to pixels — those
+aren't bugs, they're the price of universality, paid in full. Rill
+occupies the opposite corner and keeps the receipt visible: a remoted
+vector window is the same sub-kilobyte command stream the local GPU
+renders, with every downstream freedom intact — and a remoted *pixel*
+window is VNC again, because on that path Rill has no more semantics
+than RFB does. The comparison is a boundary marker, not a conquest.
+
+**Sun Ray (1999) — the right dream on the wrong wire.** Stateless
+terminals, sessions that followed a smartcard, nothing local worth
+stealing or syncing: Sun Ray is the closest ancestor to "your computer
+is an identity plus streams; devices are just glass," and it worked —
+inside a corporate LAN. Its protocol carried server-rendered pixels, so
+the glass was dumb, the link had to be fat and near, and the economics
+only closed for enterprise seat management; Oracle shut it down in
+2014. Rill keeps the statelessness where it belongs (authority and
+state on your server) and moves *rendering* into the glass: the wire
+carries meaning measured in kilobytes, so the same session-mobility
+dream survives weak links, caching makes the glass tolerant of a bad
+network rather than paralyzed by it, and the owner is a person, not an
+IT department.
+
+One sentence of synthesis, since the five converge: X11 and Plan 9 had
+the right wire discipline at the wrong semantic altitude; VNC and Sun
+Ray had the right endpoint dream with interpretation collapsed too
+early; HyperCard had the right content model with no network and no
+floor. Rill is the claim that one format at the scene altitude —
+declarative, closed, content-addressed, pairwise-trusted — satisfies
+all five ambitions at once, and the burden of that claim is exactly the
+stewardship problem the rest of this essay describes.
 
 ## The generalization: this is not a computing pattern
 
