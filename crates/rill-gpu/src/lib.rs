@@ -3991,12 +3991,32 @@ mod tests {
         }
     }
 
-    fn renderer() -> Option<Renderer> {
+    /// A `Renderer` that holds the suite's serialization guard for as long
+    /// as the test holds it. The NVIDIA driver deadlocks under concurrent
+    /// headless device creation (2 test threads pass, 4 wedge every thread
+    /// in futex waits — 2026-08-30), so GPU tests run one at a time no
+    /// matter what `--test-threads` says. `Deref` keeps the call sites
+    /// untouched; field order drops the device before releasing the lock.
+    struct TestRenderer {
+        r: Renderer,
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl std::ops::Deref for TestRenderer {
+        type Target = Renderer;
+        fn deref(&self) -> &Renderer {
+            &self.r
+        }
+    }
+
+    fn renderer() -> Option<TestRenderer> {
+        static SERIAL: Mutex<()> = Mutex::new(());
+        let guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let r = Renderer::new_headless();
         if r.is_none() {
             eprintln!("skip: no wgpu adapter available");
         }
-        r
+        Some(TestRenderer { r: r?, _serial: guard })
     }
 
     /// A rounded PushClip masks content to its curve: the corner pixel of a
