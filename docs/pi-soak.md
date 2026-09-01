@@ -285,4 +285,69 @@ boards" and "needs a gigabyte" — but its label corrects from
 *prevents an OOM* to *removes a 4× memory tax*. Projections earn their
 labels; this one is why entries record them.
 
-*Day-N verdict appends here when the run is read.*
+### 2026-08-31, hour 165 — verdict: PASS, with the staircase as its finding
+
+**Read at 15:27–15:38 PT, 3.1 hours before the 168-hour mark, by
+decision** — six consecutive flat daily maxima made the final three hours
+non-informative. A 165-hour run is recorded as a 165-hour run; the
+unqualified "a week" belongs to the verification run below.
+
+All MEASURED, from 1,979 five-minute samples plus the exit reports:
+
+* **Zero crashes, restarts, OOM kills.** All four pids original at read
+  (1453/1470/1479/1484); dmesg and journal both clean. Uptime from the
+  compositor's own exit report: 594,279.7 s = 6 d 21 h.
+* **PSS plateau, not slope.** Compositor daily maxima: 35.1 MiB (launch
+  day) → 130.7 (day 1, the staircase) → then 128.6–129.5 MiB for six
+  straight days — a 0.9 MiB band, and the all-time high-water mark was
+  six days old at read. files-app 6.3 → 5.8 MiB; dock and widget flat.
+* **fds frozen** at 8/30/9/10 the entire run. **Cache 132 KiB, unmoved**
+  — the 64 MiB sweeper held for a week, not thirty seconds.
+* **History linear:** 20 seals on the ~8.5 h cadence to the minute,
+  ~404 MiB total, and the shutdown path sealed the final segment cleanly
+  (SIGTERM exit wrote `1788205555947.rhs` before the report — the
+  BufWriter-tail caveat did not bite).
+* **Damage gate held for a week:** frames=953,266 over 594,280 s =
+  mean 1.60 fps against a 60 fps budget; damage frames 570,035 = 0.96/s,
+  exactly the 1 Hz meter; frames_per_commit=1.00. The "heartbeat-
+  dominated" criterion was written for idle — with a 1 Hz workload the
+  equivalent statement is *frames tracked the workload, not the budget*,
+  and they did. frame_ms mean 6.88, p95 9.0, p99 12.25, max 1125.2
+  (isolated spikes; seal + swap-in moments).
+* **Thermal:** 45–50 °C all week, throttled=0x0 at every sample.
+* **Server:** the widget's TLS connection lived the full 6.9 days,
+  33.9 MB in / 363.7 MB out, and closed only at our SIGTERM.
+
+**Deviations recorded:** the day-7 VNC responsiveness poke was not
+re-performed at read (the read was scripted; last human poke was mid-run)
+— the 1 Hz meter updating in every sample is the machine's version of the
+same evidence. And the compositor's plateau sits at ~129 MiB instead of
+~28 because of the seal staircase — a real finding already root-caused,
+fixed in-tree, and NOT deployed to this run on purpose. Verdict against
+the protocol's letter: every machine criterion passes; the staircase is
+the run's finding, not its failure.
+
+Raw CSV archived at `bench-results/2026-08-24_soak/` (workstation).
+
+### 2026-08-31, 15:41 PT — verification run live: same protocol, stream-seal binaries
+
+The fix's re-run, started the same afternoon. Same board, same workload
+(files-app + compositor + dock + one 1 Hz meter, nested in labwc on the
+forced 1280x800 output), same sampler (`rill-soak-20260831.csv`).
+Binaries cross-built at the pinned 1.98.0 from `b32e63a` — which carries
+the streamed seal (`walk_chunks` + incremental `index::Builder` +
+`malloc_trim(0)`) — deployed 15:40, V3D adapter line confirmed at launch.
+
+**What this run exists to answer:** seal cost. Old binaries: +76 MiB
+first seal, +43.5 warm, ~131 MiB permanent plateau. PROJECTED for these
+binaries: seals cost O(chunk) transient, plateau ~35–45 MiB. The prior
+run's history is retained (~404 MiB, 20 sealed segments), so seal #1
+lands on the usual ~8.5 h cadence tonight — the first datum.
+
+**Launch notes, for honest reading of the first samples:** first sample
+caught the compositor mid-startup at 52.9 MiB PSS (the old run sampled
+35.1 at launch and reclaimed to 28.4 by 0:30 — watch for the same
+settle). And the meter widget is spawned *by the dock* on a `--widget`
+hand-off; the detached CLI process that requested it lingered ~60 s
+before being killed, so the first sample line carries one extra
+`rill-vector` and a stray `bash` — launch noise, not a crash record.
