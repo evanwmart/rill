@@ -296,3 +296,54 @@ answers a question that is currently blocking claims.
 Step 5 is deliberate. By then the appliance's user-visible promises are all
 delivered, and an image becomes a business decision — an OEM, a fleet, a
 size budget — rather than an engineering itch.
+
+## Progress
+
+### Phase 0 — workstation-buildable groundwork (2026-09-02)
+
+Everything 15a needs that does *not* require the reference Pi's screen, so
+the hands-on Pi work is pure hardware bring-up. All on the dev box, both
+feature configs green (clippy + tests).
+
+* **`rill_gpu::dmabuf::alloc_scanout`** (commit 70f9e4b) — the crux
+  primitive, the other direction of `alloc_exported`: one linear image
+  kept alive as a wgpu render target *and* handed out as a dmabuf fd for
+  `drmModeAddFB2WithModifiers`. Render-to-linear capability is queried up
+  front and refused cleanly rather than exploding at create time.
+  * **Found by building it:** present has two modes, and drivers disagree.
+    *Copy-present* (render/write offscreen, copy into the scanout image)
+    works everywhere the import path works and is proven byte-for-byte
+    through a raw dmabuf `mmap` — the display controller's own view of the
+    memory. *Render-present* (a render pass straight into the scanout
+    image) is faster but NVIDIA's proprietary driver claims linear render
+    support and then **wedges its queue** on it (the tests poll with a
+    deadline and record a skip instead of hanging). The reference V3DV is
+    where render-present must genuinely pass; until then the DRM backend
+    fills through the copy path, which is measured-good.
+
+* **`--backend winit|drm` + `drm` feature** (this commit) — one binary,
+  two backends, per the shape above. The flag is stripped before client
+  parsing; `--backend drm` without the feature is a clean error, not a
+  missing symbol. Nested builds carry none of the DRM crate.
+
+* **`drm_backend.rs`, the 15a light-up diagnostic** — opens
+  `/dev/dri/card*` (preferring the card with a *connected* connector —
+  this multi-GPU box has four dark connectors on the discrete card),
+  reports every connector and mode, then two-buffer color-flips the
+  chosen output with legacy modeset + `page_flip`, waiting on each
+  flip-done event. Uses the drm crate's pure-Rust ioctls — no C headers,
+  so this is not the thing gating the nested build; the feature gate is
+  about keeping nested *lean*, not about compilability.
+  * **Degrade-and-wait is in from line one** (the appliance requirement
+    filed from the 2026-08-24 soak launch, where an absent display was a
+    wgpu panic three layers down): no connected connector is a backoff
+    loop, not a death — and the loop honors SIGTERM, because the first
+    smoke run produced an unkillable spin-waiting service, which is its
+    own class of appliance bug. Verified: clean exit 0 on `kill -TERM`.
+
+**What Phase 0 could NOT prove here, by construction:** the actual flip.
+This workstation's running GNOME session owns the display through the
+NVIDIA proprietary path, so every generic-DRM connector reads
+disconnected — the diagnostic and the wait loop exercised, the modeset
+and flip cycle did not. That half is 15a proper, and it belongs to the
+Pi where the process owns its VT. Everything above it is done and green.

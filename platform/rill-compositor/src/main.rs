@@ -28,6 +28,8 @@
 
 use std::os::unix::io::OwnedFd;
 mod audio;
+#[cfg(feature = "drm")]
+mod drm_backend;
 mod history_writer;
 mod recorder;
 mod stream_protocol;
@@ -1322,6 +1324,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rill_log::dev_emit("rill-compositor", "start", &[]);
     }
     install_signal_handlers();
+    // Backend selection (docs/bare-metal-plan.md: one binary, two backends).
+    // `--backend winit` is the nested default and how development happens;
+    // `--backend drm` is the bare-metal path, feature-gated so the nested
+    // build never carries the metal. Stripped here so the client-command
+    // grouping below never mistakes it for a spawn command.
+    let mut backend = String::from("winit");
+    let mut raw_args: Vec<String> = Vec::new();
+    let mut arg_iter = std::env::args().skip(1);
+    while let Some(arg) = arg_iter.next() {
+        if arg == "--backend" {
+            backend = arg_iter.next().unwrap_or_default();
+        } else if let Some(v) = arg.strip_prefix("--backend=") {
+            backend = v.to_string();
+        } else {
+            raw_args.push(arg);
+        }
+    }
+    match backend.as_str() {
+        "winit" => {}
+        #[cfg(feature = "drm")]
+        "drm" => return drm_backend::run(),
+        #[cfg(not(feature = "drm"))]
+        "drm" => {
+            return Err(
+                "this build has no DRM backend — rebuild with `--features drm` (milestone 15)"
+                    .into(),
+            );
+        }
+        other => return Err(format!("unknown backend {other:?} (expected winit or drm)").into()),
+    }
     // Clients to launch inside the compositor, `+`-separated so several can
     // run together (milestone-14 exit condition: a Rill app *and* an ordinary
     // Wayland app). Each group is a command with its own arguments.
@@ -1330,7 +1362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // just no longer what you get by default.
     let mut clients: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = Vec::new();
-    for arg in std::env::args().skip(1) {
+    for arg in raw_args {
         if arg == "+" {
             if !current.is_empty() {
                 clients.push(std::mem::take(&mut current));
