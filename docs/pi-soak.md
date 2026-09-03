@@ -351,3 +351,28 @@ settle). And the meter widget is spawned *by the dock* on a `--widget`
 hand-off; the detached CLI process that requested it lingered ~60 s
 before being killed, so the first sample line carries one extra
 `rill-vector` and a stray `bash` — launch noise, not a crash record.
+
+### 2026-09-01, hour 19 — first seals on the streamed path: the staircase is gone; two smaller questions arrive
+
+**MEASURED, from the CSV.** Two `history sealed` events so far. The
+seal-correlated PSS moves: **+0 KiB** and **+272 KiB** — against +76 and
++43.5 *MiB* for the same moments on the old binaries. The warm-seal cost
+is now sampling noise; the fix does what it says.
+
+The run is NOT at the projected 35–45 MiB plateau, and honesty about
+why is the point of labeling projections. Compositor PSS: 52.9 at
+launch, flat ~51.5 for eight hours (no reclaim down to run #1's
+~28 MiB idle — open question #1: the baseline starts ~18 MiB higher
+than run #1's, cause unmeasured), then one clean **+15.5 MiB step in a
+single 5-minute window at 23:43** — hours from either seal — and dead
+flat at 67.1 MiB for eight hours since (open question #2: cause
+unmeasured; one candidate worth checking in source is the streamed
+seal's frame-text fallback buffer, which holds deduplicated frame text
+until a `Text` event appears, but the step's distance from both seal
+lines argues against it; another is first-touch of some nightly
+retention/tier work).
+
+Neither question is the staircase: nothing here compounds per-seal, and
+the curve since 23:46 is the flattest this board has produced. Plateau
+so far: **67.1 MiB vs run #1's 130.7** — the 4× tax is at worst a 2.4×,
+pending the week and the two answers above. Day 7 reads Sep 7.
