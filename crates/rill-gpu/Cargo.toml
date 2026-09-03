@@ -37,3 +37,6 @@ workspace = true
 # The grid proof drives a real document through a real engine.
 rill-viewport = { path = "../rill-viewport" }
 rill-doc = { path = "../rill-doc" }
+# Test-only: the scanout test reads a dmabuf the way a display controller
+# would — mmap + DMA_BUF_IOCTL_SYNC — which needs raw libc.
+libc.workspace = true

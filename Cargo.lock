@@ -2517,6 +2517,7 @@ dependencies = [
  "ash",
  "bytemuck",
  "cosmic-text",
+ "libc",
  "naga",
  "pollster",
  "rill-doc",
