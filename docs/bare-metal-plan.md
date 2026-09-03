@@ -347,3 +347,34 @@ NVIDIA proprietary path, so every generic-DRM connector reads
 disconnected — the diagnostic and the wait loop exercised, the modeset
 and flip cycle did not. That half is 15a proper, and it belongs to the
 Pi where the process owns its VT. Everything above it is done and green.
+
+### Phase 0.1 — the real renderer reaches the scanout buffer (2026-09-02)
+
+The unknown between "flip solid colors" (above) and "flip a composited
+desktop" (15a's actual goal): can the production `GpuRenderer` — not a
+`write_texture` fill — compose a scene *into* an `alloc_scanout` image?
+Answered yes, on the workstation, no screen needed:
+
+* **`scanout_composites_a_real_scene`** (rill-gpu test) — a Renderer built
+  at the scanout format (BGRA, non-sRGB, the winit path's own choice) on
+  the dmabuf device composites a `DrawCommand` scene into that device's
+  exported image via the copy path, and a readback proves the rect and
+  clear landed in the buffer KMS scans out. This is the whole compose→
+  present pipeline minus the flip, byte-verified.
+  * Its second value: it made the suite's device-creation serialization
+    (the NVIDIA concurrent-create deadlock guard, 2026-08-30) a shared
+    `gpu_serial()` the dmabuf tests hold too, rather than a mutex hidden
+    inside the headless `renderer()` helper.
+
+* **`drm_backend` now renders a real frame**, not a solid fill: one
+  `GpuRenderer` on the export device, a `composite_scene` of a centered
+  card + accent bar into an offscreen target, copied into whichever
+  scanout buffer is off-screen — the exact path the test pins. The two
+  rotation buffers place the accent bar differently, so the flip on the
+  Pi will read as live motion, not a frozen frame. 15a's scope holds:
+  one output, no clients; the scene is a rendered stand-in for the
+  wallpaper, and hosting Wayland clients behind this is the next rung.
+
+Still Pi-only: the framebuffer import and the flip. But the pixels that
+will land on the glass are now produced by the real renderer and proven
+correct in memory here.

@@ -3991,12 +3991,21 @@ mod tests {
         }
     }
 
+    /// Serializes every GPU-device creation in this suite. The NVIDIA driver
+    /// deadlocks under concurrent device creation (2 test threads pass, 4
+    /// wedge every thread in futex waits — 2026-08-30), so any test that
+    /// builds a device — headless via [`renderer`] or dmabuf-capable via
+    /// [`dmabuf::DmabufDevice`] — holds this while it does, no matter what
+    /// `--test-threads` says.
+    static GPU_SERIAL: Mutex<()> = Mutex::new(());
+
+    fn gpu_serial() -> std::sync::MutexGuard<'static, ()> {
+        GPU_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// A `Renderer` that holds the suite's serialization guard for as long
-    /// as the test holds it. The NVIDIA driver deadlocks under concurrent
-    /// headless device creation (2 test threads pass, 4 wedge every thread
-    /// in futex waits — 2026-08-30), so GPU tests run one at a time no
-    /// matter what `--test-threads` says. `Deref` keeps the call sites
-    /// untouched; field order drops the device before releasing the lock.
+    /// as the test holds it. `Deref` keeps the call sites untouched; field
+    /// order drops the device before releasing the lock.
     struct TestRenderer {
         r: Renderer,
         _serial: std::sync::MutexGuard<'static, ()>,
@@ -4010,13 +4019,100 @@ mod tests {
     }
 
     fn renderer() -> Option<TestRenderer> {
-        static SERIAL: Mutex<()> = Mutex::new(());
-        let guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = gpu_serial();
         let r = Renderer::new_headless();
         if r.is_none() {
             eprintln!("skip: no wgpu adapter available");
         }
         Some(TestRenderer { r: r?, _serial: guard })
+    }
+
+    /// The 15a compose path (docs/bare-metal-plan.md): the *real* renderer
+    /// drawing a scene into an [`dmabuf::ScanoutImage`] — the buffer KMS
+    /// scans out — not the headless Rgba8 target the other tests use. This
+    /// is the load-bearing bare-metal unknown that needs no screen to
+    /// answer: a Renderer built at the scanout format (BGRA, non-sRGB, the
+    /// same the winit path picks) on the dmabuf device, compositing into
+    /// that device's exported image, read back to prove the pixels are
+    /// really there. Render-present is the mode NVIDIA wedges on (see the
+    /// `scanout_*` tests), so this drives the copy path the DRM backend
+    /// actually uses: composite into an offscreen target, copy into the
+    /// scanout image.
+    #[test]
+    fn scanout_composites_a_real_scene() {
+        let _serial = gpu_serial();
+        let Some(gpu) = dmabuf::DmabufDevice::new() else {
+            eprintln!("skip: no dmabuf-capable Vulkan device");
+            return;
+        };
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let r = Renderer::with_device(
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            format,
+            gpu.adapter_name(),
+        );
+        let s = match gpu.alloc_scanout(32, 32) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+
+        // Compose offscreen (the path that works on every driver), then copy
+        // into the scanout image — exactly what the DRM backend does.
+        let offscreen = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("compose-offscreen"),
+            size: wgpu::Extent3d { width: 32, height: 32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let center = Rect { x: 8.0, y: 8.0, w: 16.0, h: 16.0 };
+        let cmds = vec![DrawCommand::Rect { rect: center, color: RED, corner_radius: 0.0 }];
+        r.composite_scene(
+            &offscreen.create_view(&Default::default()),
+            32,
+            32,
+            BLUE,
+            &[SceneLayer::commands(&cmds)],
+            FxInputs::default(),
+        );
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &offscreen,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &s.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: 32, height: 32, depth_or_array_layers: 1 },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let _ = gpu.device.poll(wgpu::PollType::Wait);
+
+        // Read the scanout image back (BGRA on the wire; compare in BGRA).
+        let buf = r.read_texture_rgba(&s.texture, 32, 32);
+        // Center is the red rect, corner is the blue clear — proof the real
+        // compose pipeline reached the buffer the display controller reads.
+        assert_eq!(px(&buf, 32, 16, 16), [0, 0, 255, 255], "rect (BGRA red) at centre");
+        assert_eq!(px(&buf, 32, 1, 1), [255, 0, 0, 255], "clear (BGRA blue) at corner");
+
+        // KMS holds the fd, not the texture: it must outlive compositing.
+        drop(s.texture);
+        let _ = gpu.device.poll(wgpu::PollType::Wait);
+        use std::os::fd::AsRawFd;
+        assert!(s.fd.as_raw_fd() >= 0);
     }
 
     /// A rounded PushClip masks content to its curve: the corner pixel of a

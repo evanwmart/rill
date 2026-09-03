@@ -41,6 +41,13 @@ use std::time::Duration;
 use drm::buffer::DrmFourcc;
 use drm::control::{Device as ControlDevice, PageFlipFlags, connector, crtc};
 use rill_gpu::dmabuf::{DmabufDevice, ScanoutImage};
+use rill_gpu::{Renderer as GpuRenderer, SceneLayer};
+use rill_ui::{Color as UiColor, DrawCommand, Rect as UiRect};
+
+/// The scanout format: BGRA, non-sRGB — the same the winit path picks, and
+/// what `alloc_scanout` exports. The renderer's pipelines bake it in, so it
+/// must match the framebuffer's fourcc (ARGB8888).
+const SCANOUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 /// A DRM card: the drm crate's traits over a plain opened device file.
 struct Card(std::fs::File);
@@ -117,25 +124,47 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let crtc = pick_crtc(&card, &conn)?;
 
+    // The real renderer, on the export device, at the scanout format — the
+    // same construction the winit path uses (main.rs), so what lands on the
+    // glass is genuine Rill vector output, not a test pattern. 15a's scope
+    // is one output and no clients, so the "scene" is a rendered card, not a
+    // hosted desktop; wiring the Wayland client loop behind this is the rest
+    // of the ladder.
+    let renderer =
+        GpuRenderer::with_device(gpu.device.clone(), gpu.queue.clone(), SCANOUT_FORMAT, gpu.adapter_name());
+
+    // One offscreen compose target, copied into whichever scanout buffer is
+    // off-screen. Copy-present, not render-present: the path rill-gpu's
+    // scanout tests prove on every driver (render-present wedges NVIDIA's;
+    // V3DV may allow the direct path, a later per-driver upgrade).
+    let offscreen = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("drm-compose"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SCANOUT_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+
     // Two buffers in rotation — the minimum that neither tears nor stalls
-    // (bare-metal-plan.md "Buffer rotation and tearing"). Filled once with
-    // tell-them-apart colors; the flip cycle is the proof, not the picture.
-    let buffers: Vec<(ScanoutImage, drm::control::framebuffer::Handle)> = [
-        [0x20u8, 0x30, 0xc0, 0xff], // BGRA: warm rust red
-        [0xc0u8, 0x80, 0x20, 0xff], // BGRA: cold steel blue
-    ]
-    .iter()
-    .map(|color| {
-        let img = gpu.alloc_scanout(width, height).map_err(std::io::Error::other)?;
-        fill(&gpu, &img, *color);
-        let handle = card.prime_fd_to_buffer(img.fd.as_fd())?;
-        let fb = card.add_planar_framebuffer(
-            &ScanoutFb { plan: &img.plan, handle },
-            drm::control::FbCmd2Flags::MODIFIERS,
-        )?;
-        Ok::<_, Box<dyn std::error::Error>>((img, fb))
-    })
-    .collect::<Result<_, _>>()?;
+    // (bare-metal-plan.md "Buffer rotation and tearing"). The accent bar
+    // sits at two positions so the flip is visibly a live present, not a
+    // frozen frame.
+    let buffers: Vec<(ScanoutImage, drm::control::framebuffer::Handle)> = [0.0f32, 1.0]
+        .iter()
+        .map(|phase| {
+            let img = gpu.alloc_scanout(width, height).map_err(std::io::Error::other)?;
+            render_frame(&renderer, &gpu, &offscreen, &img, *phase);
+            let handle = card.prime_fd_to_buffer(img.fd.as_fd())?;
+            let fb = card.add_planar_framebuffer(
+                &ScanoutFb { plan: &img.plan, handle },
+                drm::control::FbCmd2Flags::MODIFIERS,
+            )?;
+            Ok::<_, Box<dyn std::error::Error>>((img, fb))
+        })
+        .collect::<Result<_, _>>()?;
 
     // First frame goes up with a full modeset; every one after is a flip.
     card.set_crtc(crtc, Some(buffers[0].1), (0, 0), &[conn.handle()], Some(mode))?;
@@ -286,27 +315,74 @@ fn pick_crtc(card: &Card, conn: &connector::Info) -> Result<crtc::Handle, Box<dy
     Err("no CRTC available for the connected connector".into())
 }
 
-/// Solid-fill a scanout image through the copy path (see module docs for
-/// why copy and not a render pass) and wait until the bytes are really in
-/// the buffer — KMS reads memory, not queues.
-fn fill(gpu: &DmabufDevice, img: &ScanoutImage, bgra: [u8; 4]) {
+/// Composite one real Rill frame into `offscreen` and copy it into the
+/// scanout image, waiting until the bytes are genuinely in the buffer — KMS
+/// reads memory, not queues. `phase` (0.0 or 1.0) nudges the accent bar so
+/// the two rotation buffers differ. The scene is deliberately small: 15a is
+/// one output with no clients, so this is a rendered card standing in for
+/// the wallpaper the plan's demo names, drawn through the exact
+/// `composite_scene` path the hosted desktop will use.
+fn render_frame(
+    renderer: &GpuRenderer,
+    gpu: &DmabufDevice,
+    offscreen: &wgpu::Texture,
+    img: &ScanoutImage,
+    phase: f32,
+) {
     let (w, h) = (img.plan.width, img.plan.height);
-    let pixels: Vec<u8> = bgra.iter().copied().cycle().take((w * h * 4) as usize).collect();
-    gpu.queue.write_texture(
+    let bg = UiColor { r: 0x14, g: 0x16, b: 0x1c, a: 0xff };
+    let card = UiColor { r: 0x20, g: 0x24, b: 0x2e, a: 0xff };
+    let accent = UiColor { r: 0x4c, g: 0x6e, b: 0xf5, a: 0xff };
+
+    let cw = (w as f32 * 0.5).min(640.0);
+    let ch = (h as f32 * 0.42).min(360.0);
+    let cx = (w as f32 - cw) / 2.0;
+    let cy = (h as f32 - ch) / 2.0;
+    let bar_w = cw - 96.0;
+    let travel = 24.0;
+    let cmds = vec![
+        DrawCommand::Rect {
+            rect: UiRect { x: cx, y: cy, w: cw, h: ch },
+            color: card,
+            corner_radius: 28.0,
+        },
+        DrawCommand::Rect {
+            rect: UiRect {
+                x: cx + 48.0 + phase * travel,
+                y: cy + ch - 72.0,
+                w: bar_w - phase * travel,
+                h: 18.0,
+            },
+            color: accent,
+            corner_radius: 9.0,
+        },
+    ];
+    renderer.composite_scene(
+        &offscreen.create_view(&Default::default()),
+        w,
+        h,
+        bg,
+        &[SceneLayer::commands(&cmds)],
+        rill_gpu::FxInputs::default(),
+    );
+
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: offscreen,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
         wgpu::TexelCopyTextureInfo {
             texture: &img.texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(w * 4),
-            rows_per_image: Some(h),
-        },
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
+    gpu.queue.submit([encoder.finish()]);
     let _ = gpu.device.poll(wgpu::PollType::Wait);
 }
 
