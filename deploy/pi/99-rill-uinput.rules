@@ -1,0 +1,4 @@
+# Let the `input` group open /dev/uinput, so synthetic-input testing (and any
+# future on-device input helper) runs without root. evan is in `input`.
+# Milestone 15b input verification. Remove if uinput injection is not wanted.
+KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

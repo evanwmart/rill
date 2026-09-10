@@ -1,0 +1,30 @@
+# Rill kiosk session — milestone 15c. logind gives this a real session on
+# seat0 (PAMName=login + TTYPath), which is what the DRM/libseat path needs
+# to become active and to survive VT switches. Modeled on cage/greetd, not
+# on a bare ExecStart, precisely so the seat is real.
+[Unit]
+Description=Rill session (kiosk)
+After=systemd-user-sessions.service getty@tty1.service
+Conflicts=getty@tty1.service
+# Replaces the display manager on this box: only one thing may own the card.
+Conflicts=lightdm.service
+
+[Service]
+Type=simple
+ExecStart=/home/evan/deploy/rill-session.sh
+Restart=on-failure
+RestartSec=2
+User=evan
+# A real login session on the seat — the whole point.
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+
+[Install]
+WantedBy=graphical.target
