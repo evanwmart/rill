@@ -23,7 +23,11 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # a 1.94 image met a 1.98 pin and every crate failed).
 toolchain=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$repo/rust-toolchain.toml")
 toolchain=${toolchain:-1.98.0}
-image=rill-cross-aarch64-$toolchain
+# The Dockerfile's content is in the tag too: a package added for a new
+# feature (15b's libinput/libseat/libudev) must rebuild the image, and an
+# image keyed on the toolchain alone would silently keep serving the old one.
+dockerfile_hash=$(sha256sum "$repo/scripts/cross/Dockerfile.aarch64" | cut -c1-8)
+image=rill-cross-aarch64-$toolchain-$dockerfile_hash
 args=("$@")
 if [[ ${#args[@]} -eq 0 ]]; then
     args=(-p rill -p files-app -p rill-compositor -p rill-vector)

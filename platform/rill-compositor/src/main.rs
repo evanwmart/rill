@@ -27,6 +27,21 @@
 //! ```
 
 use std::os::unix::io::OwnedFd;
+/// A line for the person watching this process, stamped with the local
+/// wall clock. The Pi soak's log (docs/pi-soak.md, 2026-09-08) could place
+/// a surface stall only between two seal filenames; every lifecycle line
+/// now says when. `say!` is stdout, `cry!` is stderr.
+macro_rules! say {
+    ($($arg:tt)*) => {
+        println!("{} rill-compositor: {}", rill_log::stamp(), format_args!($($arg)*))
+    };
+}
+macro_rules! cry {
+    ($($arg:tt)*) => {
+        eprintln!("{} rill-compositor: {}", rill_log::stamp(), format_args!($($arg)*))
+    };
+}
+
 mod audio;
 #[cfg(feature = "drm")]
 mod drm_backend;
@@ -972,7 +987,7 @@ impl Rill {
             return;
         }
         if let Err(e) = save_widget_place(&app, next) {
-            eprintln!("rill-compositor: could not save widget position: {e}");
+            cry!("could not save widget position: {e}");
         }
     }
 
@@ -1096,11 +1111,41 @@ fn install_signal_handlers() {
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGUSR2, on_shot_signal as *const () as libc::sighandler_t);
     }
+}
+
+/// `SIGUSR2`: write the next composed frame as a PNG (the metal only —
+/// the nested swapchain's texture is not readable). For a screen nobody
+/// can see: the bench Pi's forced output has no panel, a kiosk in the
+/// field has no one at it. `RILL_SHOT_DIR` says where; default `$HOME`.
+static SHOT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_shot_signal(_sig: libc::c_int) {
+    SHOT_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn shutting_down() -> bool {
     SHUTDOWN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reap any dead child, non-blocking. The Vulkan driver forks a helper at
+/// startup that it never waits on (one stable zombie, measured on the Pi
+/// over hours), and a spawned client that exits is a zombie until someone
+/// waits — harmless once, but a session that runs for weeks should not let
+/// the process table fill. `WNOHANG` means this is one cheap syscall per
+/// frame that returns immediately when there is nothing to reap. Safe here
+/// because the compositor never `wait`s on a child it tracks: the audio
+/// tap's `parec` and the spawned clients are both fire-and-forget.
+fn reap_children() {
+    loop {
+        let mut status = 0;
+        // SAFETY: waitpid with WNOHANG only reads; -1 means "any child".
+        let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+        if pid <= 0 {
+            break;
+        }
+    }
 }
 
 /// Surface present mode: `RILL_PRESENT_MODE=auto|immediate|mailbox|fifo`.
@@ -1153,8 +1198,8 @@ fn present_mode(supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
         return asked;
     }
     if explicit {
-        eprintln!(
-            "rill-compositor: present mode {asked:?} unsupported here (have {supported:?}) \
+        cry!(
+            "present mode {asked:?} unsupported here (have {supported:?}) \
              — falling back to AutoVsync"
         );
     }
@@ -1175,7 +1220,7 @@ fn nested_output_size() -> (i32, i32) {
     match (w.trim().parse::<i32>(), h.trim().parse::<i32>()) {
         (Ok(w), Ok(h)) if (16..=7680).contains(&w) && (16..=4320).contains(&h) => (w, h),
         _ => {
-            eprintln!("rill-compositor: ignoring RILL_BENCH_RESOLUTION={spec:?} (want WxH)");
+            cry!("ignoring RILL_BENCH_RESOLUTION={spec:?} (want WxH)");
             DEFAULT
         }
     }
@@ -1270,8 +1315,8 @@ fn frame_report(
     commits: u64,
 ) {
     let secs = uptime.as_secs_f64().max(0.001);
-    println!(
-        "rill-compositor: frames={frames} heartbeat={heartbeat} damage={} \
+    say!(
+        "frames={frames} heartbeat={heartbeat} damage={} \
          uptime={secs:.1}s mean_fps={:.2}",
         frames.saturating_sub(heartbeat),
         frames as f64 / secs
@@ -1283,14 +1328,14 @@ fn frame_report(
     // Pi measured ~2.1, and halving that halves the compositor's cost without
     // making any single frame faster.
     if commits > 0 {
-        println!(
-            "rill-compositor: commits={commits} frames_per_commit={:.2}",
+        say!(
+            "commits={commits} frames_per_commit={:.2}",
             frames.saturating_sub(heartbeat) as f64 / commits as f64
         );
     }
     if times.count > 0 {
-        println!(
-            "rill-compositor: frame_ms mean={:.2} p50={:.2} p95={:.2} p99={:.2} \
+        say!(
+            "frame_ms mean={:.2} p50={:.2} p95={:.2} p99={:.2} \
              max={:.2} n={}",
             times.mean_ms(),
             times.percentile_ms(0.50),
@@ -1302,8 +1347,8 @@ fn frame_report(
         // The split that says whether a slow frame is our work or the
         // display's pacing. `work` is the span minus the acquire wait; when
         // vsync is the limiter, acquire carries almost all of it.
-        println!(
-            "rill-compositor: acquire_ms mean={:.2} p50={:.2} p95={:.2} max={:.2} \
+        say!(
+            "acquire_ms mean={:.2} p50={:.2} p95={:.2} max={:.2} \
              work_ms_mean={:.2}",
             acquire.mean_ms(),
             acquire.percentile_ms(0.50),
@@ -1341,19 +1386,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             raw_args.push(arg);
         }
     }
-    match backend.as_str() {
-        "winit" => {}
+    let metal_backend = match backend.as_str() {
+        "winit" => false,
         #[cfg(feature = "drm")]
-        "drm" => return drm_backend::run(),
+        "drm" => true,
+        #[cfg(feature = "drm")]
+        "drm-lightup" => return drm_backend::light_up(),
         #[cfg(not(feature = "drm"))]
-        "drm" => {
+        "drm" | "drm-lightup" => {
             return Err(
                 "this build has no DRM backend — rebuild with `--features drm` (milestone 15)"
                     .into(),
             );
         }
         other => return Err(format!("unknown backend {other:?} (expected winit or drm)").into()),
-    }
+    };
     // Clients to launch inside the compositor, `+`-separated so several can
     // run together (milestone-14 exit condition: a Rill app *and* an ordinary
     // Wayland app). Each group is a command with its own arguments.
@@ -1408,53 +1455,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|n| n.to_str())
         .map(str::to_string)
         .ok_or("no socket name")?;
-    println!("rill-compositor: listening on WAYLAND_DISPLAY={socket_name}");
+    say!("listening on WAYLAND_DISPLAY={socket_name}");
 
-    // The host window is raw winit (smithay's reexport, so versions align):
-    // smithay's own winit backend would create an EGL surface eagerly, and the
-    // host's DRM-syncobj protocol allows only one sync object per wl_surface —
-    // EGL's would lock Vulkan's WSI out. Raw winit means wgpu owns every pixel
-    // AND the only GPU context (W3, specs/wgpu-renderer.md D2); input is
-    // translated by hand below with smithay's own mappings.
-    let mut event_loop = EventLoop::new()?;
-    let mut host = Host { window: None, events: Vec::new() };
-    for _ in 0..50 {
-        let _ = event_loop.pump_app_events(Some(std::time::Duration::ZERO), &mut host);
-        if host.window.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let window = host.window.clone().ok_or("winit window did not initialize")?;
+    // The presenter: what input arrives from and what frames go to. Nested,
+    // a raw winit window (smithay's reexport, so versions align — smithay's
+    // own winit backend would create an EGL surface eagerly, and the host's
+    // DRM-syncobj protocol allows only one sync object per wl_surface, so
+    // EGL's would lock Vulkan's WSI out; raw winit means wgpu owns every
+    // pixel AND the only GPU context, W3, specs/wgpu-renderer.md D2). On the
+    // metal, the seat, the card and libinput (drm_backend.rs). Everything
+    // below this match is shared; the loop matches on the presenter at the
+    // five seams — pump, size, acquire, present, budget — and nowhere else.
+    let (mut presenter, gpu, surface_format): (Presenter, DmabufDevice, wgpu::TextureFormat) =
+        if metal_backend {
+            #[cfg(feature = "drm")]
+            {
+                let (metal, gpu) = drm_backend::Metal::open()?;
+                (Presenter::Metal(metal), gpu, drm_backend::SCANOUT_FORMAT)
+            }
+            #[cfg(not(feature = "drm"))]
+            unreachable!("metal backend without the drm feature is refused above")
+        } else {
+            let mut event_loop = EventLoop::new()?;
+            let mut host = Host { window: None, events: Vec::new() };
+            for _ in 0..50 {
+                let _ = event_loop.pump_app_events(Some(std::time::Duration::ZERO), &mut host);
+                if host.window.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let window = host.window.clone().ok_or("winit window did not initialize")?;
 
-    // wgpu: a surface on the winit window, and a dmabuf-capable device on an
-    // adapter that can present to it (same GPU imports and composites).
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
-        ..Default::default()
-    });
-    let wgpu_surface = unsafe {
-        instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(&*window)?)?
-    };
-    let gpu = DmabufDevice::new_on(&instance, Some(&wgpu_surface))
-        .ok_or("no dmabuf-capable Vulkan device")?;
+            // wgpu: a surface on the winit window, and a dmabuf-capable device
+            // on an adapter that can present to it (same GPU imports and
+            // composites).
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::VULKAN,
+                ..Default::default()
+            });
+            let wgpu_surface = unsafe {
+                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(&*window)?)?
+            };
+            let gpu = DmabufDevice::new_on(&instance, Some(&wgpu_surface))
+                .ok_or("no dmabuf-capable Vulkan device")?;
+            // Prefer a non-sRGB surface format: colors were authored against
+            // a linear 8-bit pipeline (the GLES path), and client buffers are
+            // raw bytes.
+            let caps = wgpu_surface.get_capabilities(gpu.adapter());
+            let surface_format =
+                caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+            (
+                Presenter::Winit { event_loop, host, window, wgpu_surface, caps, configured_size: None },
+                gpu,
+                surface_format,
+            )
+        };
     // Name alone does not identify a renderer: the same card through a
     // different ICD or driver version is a different set of numbers, and a
     // measurement that cannot name its renderer cannot be reproduced.
     // scripts/bench-stack.sh records this line with the rest of the specs.
     {
         let info = gpu.adapter().get_info();
-        println!(
-            "rill-compositor: wgpu on {} ({:?}, {:?}, driver {} {})",
+        say!(
+            "wgpu on {} ({:?}, {:?}, driver {} {})",
             info.name, info.backend, info.device_type, info.driver, info.driver_info
         );
     }
-
-    // Prefer a non-sRGB surface format: colors were authored against a linear
-    // 8-bit pipeline (the GLES path), and client buffers are raw bytes.
-    let caps = wgpu_surface.get_capabilities(gpu.adapter());
-    let surface_format =
-        caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
     let renderer = GpuRenderer::with_device(
         gpu.device.clone(),
         gpu.queue.clone(),
@@ -1469,7 +1536,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             dmabuf_formats.push(DrmFormat { code: fourcc, modifier: Modifier::from(modifier) });
         }
     }
-    println!("rill-compositor: {} importable dmabuf formats", dmabuf_formats.len());
+    say!("{} importable dmabuf formats", dmabuf_formats.len());
     let mut dmabuf_state = DmabufState::new();
     let _dmabuf_global = dmabuf_state.create_global::<Rill>(&dh, dmabuf_formats);
 
@@ -1478,17 +1545,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // reachable (see the manager's description in rill-stream-v1.xml).
     let _stream_global = dh.create_global::<Rill, RillStreamManagerV1, ()>(3, ());
 
+    let (out_w, out_h, model) = match &presenter {
+        Presenter::Winit { .. } => {
+            let (w, h) = nested_output_size();
+            (w, h, "Nested")
+        }
+        #[cfg(feature = "drm")]
+        Presenter::Metal(m) => (m.output.width as i32, m.output.height as i32, "Metal"),
+    };
     let output = Output::new(
         "rill-0".into(),
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
             make: "Rill".into(),
-            model: "Nested".into(),
+            model: model.into(),
         },
     );
-    let (out_w, out_h) = nested_output_size();
-    println!("rill-compositor: nested output {out_w}x{out_h}");
+    say!("{} output {out_w}x{out_h}", model.to_lowercase());
     let mode = Mode { size: (out_w, out_h).into(), refresh: 60_000 };
     output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(mode);
@@ -1517,7 +1591,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         edge_hover: None,
         popups: PopupManager::default(),
         popup_grab: None,
-        output_size: nested_output_size().into(),
+        output_size: (out_w, out_h).into(),
         background: None,
         dock: None,
         display_handle: dh.clone(),
@@ -1545,8 +1619,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = std::process::Command::new(&client_cmd[0]);
         cmd.args(&client_cmd[1..]).env("WAYLAND_DISPLAY", &socket_name).env_remove("DISPLAY");
         match cmd.spawn() {
-            Ok(_) => println!("rill-compositor: spawned client {:?}", client_cmd.join(" ")),
-            Err(e) => eprintln!("rill-compositor: could not spawn {:?}: {e}", client_cmd[0]),
+            Ok(_) => say!("spawned client {:?}", client_cmd.join(" ")),
+            Err(e) => cry!("could not spawn {:?}: {e}", client_cmd[0]),
         }
     }
 
@@ -1563,16 +1637,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pacing to the refresh interval removes the beat. A monitor that does
     // not report its rate falls back to 60Hz, which is the number the old
     // constant was reaching for anyway.
-    let frame_budget = host
-        .window
-        .as_ref()
-        .and_then(|w| w.current_monitor())
-        .and_then(|m| m.refresh_rate_millihertz())
+    let refresh_mhz = match &presenter {
+        Presenter::Winit { window, .. } => {
+            window.current_monitor().and_then(|m| m.refresh_rate_millihertz())
+        }
+        #[cfg(feature = "drm")]
+        Presenter::Metal(m) => Some(m.output.refresh_mhz),
+    };
+    let frame_budget = refresh_mhz
         .filter(|mhz| *mhz >= 20_000)
         .map(|mhz| std::time::Duration::from_nanos(1_000_000_000_000u64 / mhz as u64))
         .unwrap_or(std::time::Duration::from_nanos(16_666_667));
-    println!(
-        "rill-compositor: frame budget {:.2}ms ({:.1}fps)",
+    say!(
+        "frame budget {:.2}ms ({:.1}fps)",
         frame_budget.as_secs_f64() * 1000.0,
         1.0 / frame_budget.as_secs_f64()
     );
@@ -1614,13 +1691,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // pause — and the badge in the corner never lies about which it is.
     if std::env::var("RILL_HISTORY").as_deref() != Ok("0") {
         let dir = history_dir();
-        println!("rill-compositor: history recording to {} (rill history list)", dir.display());
+        say!("history recording to {} (rill history list)", dir.display());
         if !state.tier_policy.is_default() {
             // The owner should see that their ratchet loaded — a policy that
             // silently failed to parse would record everything at declared
             // tiers, which is exactly what the policy exists to raise.
-            println!(
-                "rill-compositor: history tier policy active ({})",
+            say!(
+                "history tier policy active ({})",
                 history_policy_path().display()
             );
         }
@@ -1638,19 +1715,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if kek.is_none() {
             // Stated at boot, once: an unenrolled machine records plaintext,
             // and the honest report beats a silent downgrade.
-            println!(
-                "rill-compositor: history is UNENCRYPTED (no device identity at {})",
+            say!(
+                "history is UNENCRYPTED (no device identity at {})",
                 identity.display()
             );
         }
         state.history = Some(history_writer::History::start(dir, String::new(), kek));
     }
     if std::env::var_os("RILL_RECORD").is_some() {
-        println!("rill-compositor: {}", state.toggle_recording());
+        say!("{}", state.toggle_recording());
     }
     let mut pointer_loc: Point<f64, Logical> = (0.0, 0.0).into();
     let mut applied_cursor: (bool, CursorIcon) = (true, CursorIcon::Default);
-    let mut configured_size: Option<Size<i32, Physical>> = None;
     let mut last_render = std::time::Instant::now();
     let mut last_window_count = 0usize;
     // Imported client textures, keyed by wl_buffer id. dmabufs import once
@@ -1680,6 +1756,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (fx.focus_glow, fx.shadow, fx.focus_glow_blur, fx.shadow_blur)
     };
     let mut cursor_style = theme_desktop_fx().cursor;
+    cursor_style.draw |= metal_backend;
     // Pixel wallpaper: decoded once per (path, mtime) change, painted as the
     // scene's bottom layer. `None` = clear color shows.
     let mut installed_wall: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
@@ -1723,9 +1800,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The desktop's ears: a parec tap on the output monitor, reduced to the
     // AudioFx rows the shaders read. Silent (all zeros) if parec is absent.
     let mut audio_tap = audio::AudioTap::start();
+    // Whether the seat was ours last iteration — the false→true edge is a
+    // VT coming back, and the output needs a modeset again.
+    let mut seat_was_active = true;
+
+    // The way out, from every exit: stop a recording cleanly, print the
+    // lifetime frame report, return.
+    macro_rules! finish {
+        () => {{
+            if state.recorder.is_some() {
+                say!("{}", state.toggle_recording());
+            }
+            frame_report(
+                total_frames,
+                heartbeat_frames,
+                start_time.elapsed(),
+                &frame_times,
+                &acquire_times,
+                state.total_commits,
+            );
+            return Ok(());
+        }};
+    }
 
     loop {
-        host.events.clear();
+        match &mut presenter {
+            Presenter::Winit { host, .. } => host.events.clear(),
+            #[cfg(feature = "drm")]
+            Presenter::Metal(_) => {}
+        }
         if last_shader_check.elapsed() > std::time::Duration::from_millis(300) {
             last_shader_check = std::time::Instant::now();
             let fx_conf = theme_desktop_fx_cached();
@@ -1736,6 +1839,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.needs_redraw = true;
             }
             cursor_style = fx_conf.cursor;
+            // The metal has no host cursor to fall back on: ours is drawn
+            // whatever the theme says (a kiosk's touchscreen hides it by
+            // never moving a pointer, not by a flag).
+            cursor_style.draw |= metal_backend;
             state.draw_cursor = cursor_style.draw;
             if fx_conf.hud != state.show_hud {
                 state.show_hud = fx_conf.hud;
@@ -1749,7 +1856,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     installed_boids,
                     [state.output_size.w as f32, state.output_size.h as f32],
                 );
-                println!("rill-compositor: boids {}", installed_boids);
+                say!("boids {}", installed_boids);
                 state.needs_redraw = true;
             }
             if fx_conf.dock_height != state.dock_height {
@@ -1795,11 +1902,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 wall_tex = match &current_wall {
                     Some((p, _)) => match upload_wallpaper(&gpu, p) {
                         Ok(t) => {
-                            println!("rill-compositor: wallpaper {}", p.display());
+                            say!("wallpaper {}", p.display());
                             Some(t)
                         }
                         Err(e) => {
-                            eprintln!("rill-compositor: wallpaper rejected: {e}");
+                            cry!("wallpaper rejected: {e}");
                             None
                         }
                     },
@@ -1823,18 +1930,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
                                     if animated { "animated" } else { "static" }
                                 );
-                                println!("rill-compositor: background shader {}", p.display());
+                                say!("background shader {}", p.display());
                             }
-                            Err(e) => eprintln!("rill-compositor: background rejected: {e}"),
+                            Err(e) => cry!("background rejected: {e}"),
                         },
-                        Err(e) => eprintln!("rill-compositor: background unreadable: {e}"),
+                        Err(e) => cry!("background unreadable: {e}"),
                     },
                     None => {
                         let _ = renderer.set_background(None);
                         bg_animated = false;
                         bg_param_decls.clear();
                         bg_label = "off".into();
-                        println!("rill-compositor: background shader cleared");
+                        say!("background shader cleared");
                     }
                 }
                 installed_bg = current_bg;
@@ -1855,17 +1962,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Ok(mesh.vertices.len() / 3)
                         });
                         match loaded {
-                            Ok(tris) => println!(
-                                "rill-compositor: model {} ({tris} triangles)",
+                            Ok(tris) => say!(
+                                "model {} ({tris} triangles)",
                                 mp.display()
                             ),
-                            Err(e) => eprintln!("rill-compositor: model rejected: {e}"),
+                            Err(e) => cry!("model rejected: {e}"),
                         }
                     }
                     _ => {
                         let _ = renderer.set_model(None, None);
                         if installed_model != (None, None) {
-                            println!("rill-compositor: model cleared");
+                            say!("model cleared");
                         }
                     }
                 }
@@ -1888,8 +1995,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if animated { "animated" } else { "static" },
                                     if warp.is_some() { ", warped input" } else { "" }
                                 );
-                                println!(
-                                    "rill-compositor: effect shader {} ({}{})",
+                                say!(
+                                    "effect shader {} ({}{})",
                                     p.display(),
                                     if animated { "animated" } else { "static" },
                                     if warp.is_some() { ", input warped" } else { "" }
@@ -1897,9 +2004,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // Keep the previous effect: a broken hot-reload
                             // must never take the desktop down.
-                            Err(e) => eprintln!("rill-compositor: shader rejected: {e}"),
+                            Err(e) => cry!("shader rejected: {e}"),
                         },
-                        Err(e) => eprintln!("rill-compositor: shader unreadable: {e}"),
+                        Err(e) => cry!("shader unreadable: {e}"),
                     },
                     None => {
                         let _ = renderer.set_effect(None);
@@ -1907,7 +2014,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         fx_param_decls.clear();
                         state.pointer_warp = None;
                         effect_label = "off".into();
-                        println!("rill-compositor: effect shader cleared");
+                        say!("effect shader cleared");
                     }
                 }
                 installed_shader = current;
@@ -1924,23 +2031,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Ok(animated) => {
                                 window_fx_animated = animated;
                                 window_param_decls = rill_appkit::params::shader_params(&src);
-                                println!(
-                                    "rill-compositor: window shader {} ({})",
+                                say!(
+                                    "window shader {} ({})",
                                     p.display(),
                                     if animated { "animated" } else { "static" }
                                 );
                             }
                             Err(e) => {
-                                eprintln!("rill-compositor: window shader rejected: {e}")
+                                cry!("window shader rejected: {e}")
                             }
                         },
-                        Err(e) => eprintln!("rill-compositor: window shader unreadable: {e}"),
+                        Err(e) => cry!("window shader unreadable: {e}"),
                     },
                     None => {
                         let _ = renderer.set_window_fx(None);
                         window_fx_animated = false;
                         window_param_decls.clear();
-                        println!("rill-compositor: window shader cleared");
+                        say!("window shader cleared");
                     }
                 }
                 installed_window_shader = current_wfx;
@@ -1968,8 +2075,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rs.as_deref(),
                     ds.as_deref(),
                 ) {
-                    Ok(()) => println!(
-                        "rill-compositor: particles {} / {}",
+                    Ok(()) => say!(
+                        "particles {} / {}",
                         current_particles
                             .0
                             .as_ref()
@@ -1981,7 +2088,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .map(|(p, _)| p.display().to_string())
                             .unwrap_or_else(|| "built-in draw".into()),
                     ),
-                    Err(e) => eprintln!("rill-compositor: particle shader rejected: {e}"),
+                    Err(e) => cry!("particle shader rejected: {e}"),
                 }
                 installed_particles = current_particles;
                 state.needs_redraw = true;
@@ -2075,41 +2182,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             std::time::Duration::from_millis(32)
         };
-        let status = event_loop.pump_app_events(Some(pump_timeout), &mut host);
-        if shutting_down() {
-            println!("rill-compositor: shutting down");
-            if state.recorder.is_some() {
-                println!("rill-compositor: {}", state.toggle_recording());
-            }
-            frame_report(total_frames, heartbeat_frames, start_time.elapsed(), &frame_times, &acquire_times, state.total_commits);
-            return Ok(());
-        }
-        if let PumpStatus::Exit(_) = status {
-            if state.recorder.is_some() {
-                println!("rill-compositor: {}", state.toggle_recording());
-            }
-            frame_report(total_frames, heartbeat_frames, start_time.elapsed(), &frame_times, &acquire_times, state.total_commits);
-            return Ok(());
-        }
-        let inner = window.inner_size();
-        let size: Size<i32, Physical> = (inner.width as i32, inner.height as i32).into();
-        for event in std::mem::take(&mut host.events) {
-            if handle_window_event(
-                event,
-                &mut state,
-                &keyboard,
-                &pointer,
-                &mut pointer_loc,
-                &start_time,
-                &window,
-            ) {
-                if state.recorder.is_some() {
-                    println!("rill-compositor: {}", state.toggle_recording());
+        let size: Size<i32, Physical> = match &mut presenter {
+            Presenter::Winit { event_loop, host, window, .. } => {
+                let status = event_loop.pump_app_events(Some(pump_timeout), host);
+                if shutting_down() {
+                    say!("shutting down");
+                    finish!();
                 }
-                frame_report(total_frames, heartbeat_frames, start_time.elapsed(), &frame_times, &acquire_times, state.total_commits);
-                return Ok(());
+                if let PumpStatus::Exit(_) = status {
+                    finish!();
+                }
+                let inner = window.inner_size();
+                for event in std::mem::take(&mut host.events) {
+                    if handle_window_event(
+                        event,
+                        &mut state,
+                        &keyboard,
+                        &pointer,
+                        &mut pointer_loc,
+                        &start_time,
+                        window,
+                    ) {
+                        finish!();
+                    }
+                }
+                (inner.width as i32, inner.height as i32).into()
             }
+            #[cfg(feature = "drm")]
+            Presenter::Metal(m) => {
+                let events = m.pump(pump_timeout);
+                if shutting_down() {
+                    say!("shutting down");
+                    finish!();
+                }
+                let size: Size<i32, Physical> =
+                    (m.output.width as i32, m.output.height as i32).into();
+                for event in events {
+                    handle_libinput_event(
+                        event,
+                        &mut state,
+                        &keyboard,
+                        &pointer,
+                        &mut pointer_loc,
+                        &start_time,
+                        size,
+                    );
+                }
+                size
+            }
+        };
+        // The seat: while another VT has the console the card is not ours
+        // to flip. Keep dispatching clients (they keep their state), stop
+        // drawing, and re-set the mode on the way back.
+        let seat_active = match &presenter {
+            Presenter::Winit { .. } => true,
+            #[cfg(feature = "drm")]
+            Presenter::Metal(m) => m.active(),
+        };
+        if seat_active && !seat_was_active {
+            say!("seat is ours again — resuming");
+            #[cfg(feature = "drm")]
+            if let Presenter::Metal(m) = &mut presenter {
+                m.output.resume();
+            }
+            state.needs_redraw = true;
         }
+        seat_was_active = seat_active;
 
         // Stats HUD: sample /proc for the compositor + every client at 2 Hz
         // while visible. Sampling marks damage, so the HUD live-updates even
@@ -2224,7 +2362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // Render only when damage exists *and* the frame budget allows (input
         // can wake the pump early; the redraw then waits for its slot).
-        if state.needs_redraw && last_render.elapsed() >= frame_budget {
+        if seat_active && state.needs_redraw && last_render.elapsed() >= frame_budget {
         // A gap is only news when it is *late*. Measured against the frame
         // threshold it fired on every ordinary 60 Hz interval — hundreds of
         // "frame gap 15.9ms" lines saying nothing but "we are running at the
@@ -2233,8 +2371,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let (Some(threshold), Some(prev)) = (frame_log_threshold, last_frame_end) {
             let gap = prev.elapsed();
             if gap > frame_budget + threshold {
-                println!(
-                    "rill-compositor: frame gap {:.1}ms at t={:.1}s (budget {:.1}ms)",
+                say!(
+                    "frame gap {:.1}ms at t={:.1}s (budget {:.1}ms)",
                     gap.as_secs_f64() * 1000.0,
                     start_time.elapsed().as_secs_f64(),
                     frame_budget.as_secs_f64() * 1000.0,
@@ -2248,61 +2386,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if by_heartbeat {
             heartbeat_frames += 1;
         }
-        // (Re)configure the swapchain when the window size changes. Clamp to
-        // the device's texture cap so an oversized window can't panic the
-        // configure (belt to the adapter-limits suspenders).
+        // Clamp to the device's texture cap so an oversized window can't
+        // panic the configure (belt to the adapter-limits suspenders).
         let max_dim = gpu.device.limits().max_texture_dimension_2d as i32;
         let size: Size<i32, Physical> = (size.w.min(max_dim), size.h.min(max_dim)).into();
-        if size.w > 0 && size.h > 0 && configured_size != Some(size) {
-            let reconfigure_started = std::time::Instant::now();
-            wgpu_surface.configure(
-                &gpu.device,
-                &wgpu::SurfaceConfiguration {
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    format: surface_format,
-                    width: size.w as u32,
-                    height: size.h as u32,
-                    present_mode: present_mode(&caps.present_modes),
-                    desired_maximum_frame_latency: 2,
-                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                    view_formats: vec![],
-                },
-            );
-            configured_size = Some(size);
-            // Every step of a window drag lands here, rebuilding the
-            // swapchain, and it is the one part of a resize the frame log
-            // could not see: it happens before `acquire` and is charged to
-            // neither phase. A drag that feels heavy while the frames either
-            // side of it read a millisecond is this, or it is not in the
-            // compositor at all.
-            if let Some(threshold) = frame_log_threshold
-                && reconfigure_started.elapsed() > threshold
-            {
-                println!(
-                    "rill-compositor: slow reconfigure {:.1}ms at t={:.1}s ({}x{})",
-                    reconfigure_started.elapsed().as_secs_f64() * 1000.0,
-                    start_time.elapsed().as_secs_f64(),
-                    size.w,
-                    size.h,
-                );
-            }
-        }
         let acquire_started = std::time::Instant::now();
-        let frame = match wgpu_surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                configured_size = None; // reconfigure next iteration
-                continue;
+        let (acquired, frame_view) = match &mut presenter {
+            Presenter::Winit { wgpu_surface, caps, configured_size, .. } => {
+                // (Re)configure the swapchain when the window size changes.
+                if size.w > 0 && size.h > 0 && *configured_size != Some(size) {
+                    let reconfigure_started = std::time::Instant::now();
+                    wgpu_surface.configure(
+                        &gpu.device,
+                        &wgpu::SurfaceConfiguration {
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            format: surface_format,
+                            width: size.w as u32,
+                            height: size.h as u32,
+                            present_mode: present_mode(&caps.present_modes),
+                            desired_maximum_frame_latency: 2,
+                            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                            view_formats: vec![],
+                        },
+                    );
+                    *configured_size = Some(size);
+                    // Every step of a window drag lands here, rebuilding the
+                    // swapchain, and it is the one part of a resize the frame
+                    // log could not see: it happens before `acquire` and is
+                    // charged to neither phase. A drag that feels heavy while
+                    // the frames either side of it read a millisecond is
+                    // this, or it is not in the compositor at all.
+                    if let Some(threshold) = frame_log_threshold
+                        && reconfigure_started.elapsed() > threshold
+                    {
+                        say!(
+                            "slow reconfigure {:.1}ms at t={:.1}s ({}x{})",
+                            reconfigure_started.elapsed().as_secs_f64() * 1000.0,
+                            start_time.elapsed().as_secs_f64(),
+                            size.w,
+                            size.h,
+                        );
+                    }
+                }
+                let frame = match wgpu_surface.get_current_texture() {
+                    Ok(frame) => frame,
+                    Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                        *configured_size = None; // reconfigure next iteration
+                        continue;
+                    }
+                    Err(e) => {
+                        cry!("surface error: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                };
+                let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (Acquired::Winit(frame), view)
             }
-            Err(e) => {
-                eprintln!("rill-compositor: surface error: {e}");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                continue;
-            }
+            #[cfg(feature = "drm")]
+            Presenter::Metal(m) => (Acquired::Metal, m.output.acquire()),
         };
         let acquire_took = acquire_started.elapsed();
         acquire_times.record(acquire_took);
-        let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Gather every mapped window's content bottom→top (the space iterates
         // bottom-up; composite draws in list order). A window is either
@@ -2892,8 +3037,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
         let composite_took = composite_started.elapsed();
+        #[cfg(feature = "drm")]
+        if SHOT_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed)
+            && let Presenter::Metal(m) = &presenter
+        {
+            let dir = std::env::var_os("RILL_SHOT_DIR")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let path = dir.join(format!(
+                "rill-shot-{}.png",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            ));
+            match m.output.screenshot(&gpu) {
+                Ok(rgba) => match image::save_buffer(
+                    &path,
+                    &rgba,
+                    m.output.width,
+                    m.output.height,
+                    image::ColorType::Rgba8,
+                ) {
+                    Ok(()) => say!("screenshot {}", path.display()),
+                    Err(e) => cry!("screenshot write failed: {e}"),
+                },
+                Err(e) => cry!("screenshot readback failed: {e}"),
+            }
+        }
         let present_started = std::time::Instant::now();
-        frame.present();
+        match acquired {
+            Acquired::Winit(frame) => frame.present(),
+            #[cfg(feature = "drm")]
+            Acquired::Metal => {
+                if let Presenter::Metal(m) = &mut presenter
+                    && let Err(e) = m.output.present(&gpu)
+                {
+                    // A refused flip is the display going away, not the
+                    // desktop: report it and keep going — the next frame
+                    // tries again, and a VT switch will have paused us.
+                    cry!("present failed: {e}");
+                }
+            }
+        }
         let present_took = present_started.elapsed();
         let frame_took = last_render.elapsed();
         frame_times.record(frame_took);
@@ -2907,8 +3094,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Split by phase: a stall in `composite` is our drawing, one in
             // `present` is the display or the driver, and one in neither is
             // the acquire or something between.
-            println!(
-                "rill-compositor: slow frame {:.1}ms at t={:.1}s \
+            say!(
+                "slow frame {:.1}ms at t={:.1}s \
                  (acquire {:.1} composite {:.1} present {:.1})",
                 frame_took.as_secs_f64() * 1000.0,
                 start_time.elapsed().as_secs_f64(),
@@ -2943,16 +3130,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = display.handle().insert_client(stream, Arc::new(ClientState::default()));
             }
             Ok(None) => {}
-            Err(e) => eprintln!("rill-compositor: accept failed: {e}"),
+            Err(e) => cry!("accept failed: {e}"),
         }
         if let Err(e) = display.dispatch_clients(&mut state) {
-            eprintln!("rill-compositor: client dispatch failed: {e}");
+            cry!("client dispatch failed: {e}");
         }
         if let Err(e) = display.flush_clients() {
-            eprintln!("rill-compositor: client flush failed: {e}");
+            cry!("client flush failed: {e}");
         }
         state.space.refresh();
         state.popups.cleanup();
+        reap_children();
         // A dead grabbing popup — the client closed its own menu — passes
         // the grab to the deepest popup still open in the chain, or ends
         // it. Keyboard focus never moved, so there is nothing to restore.
@@ -3052,7 +3240,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let want = if let Some(icon) = state.edge_cursor() { (true, icon) } else { want };
         let want = if cursor_style.draw { (false, want.1) } else { want };
-        if want != applied_cursor {
+        if want != applied_cursor
+            && let Presenter::Winit { window, .. } = &presenter
+        {
             applied_cursor = want;
             window.set_cursor_visible(want.0);
             if want.0 {
@@ -3068,6 +3258,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct Host {
     window: Option<Arc<WinitWindow>>,
     events: Vec<WindowEvent>,
+}
+
+/// One binary, two backends (docs/bare-metal-plan.md): where input arrives
+/// from and what frames go to. The frame body in `main` is shared; this is
+/// matched at its five seams and nowhere else.
+enum Presenter {
+    Winit {
+        event_loop: EventLoop<()>,
+        host: Host,
+        window: Arc<WinitWindow>,
+        wgpu_surface: wgpu::Surface<'static>,
+        caps: wgpu::SurfaceCapabilities,
+        configured_size: Option<Size<i32, Physical>>,
+    },
+    #[cfg(feature = "drm")]
+    Metal(drm_backend::Metal),
+}
+
+/// What `acquire` handed back, so `present` knows what to do with it.
+enum Acquired {
+    Winit(wgpu::SurfaceTexture),
+    #[cfg(feature = "drm")]
+    Metal,
 }
 
 impl ApplicationHandler for Host {
@@ -3089,7 +3302,7 @@ impl ApplicationHandler for Host {
                 });
             match event_loop.create_window(attrs) {
                 Ok(window) => self.window = Some(Arc::new(window)),
-                Err(e) => eprintln!("rill-compositor: create_window failed: {e}"),
+                Err(e) => cry!("create_window failed: {e}"),
             }
         }
     }
@@ -3175,7 +3388,7 @@ fn collect_content_tree(
                             Some(bundle)
                         }
                         Err(e) => {
-                            eprintln!("rill-compositor: dmabuf import failed: {e}");
+                            cry!("dmabuf import failed: {e}");
                             rill_log::dev!(
                                 "rill-compositor",
                                 "dmabuf_import_failed",
@@ -3190,7 +3403,7 @@ fn collect_content_tree(
                 match upload_shm(gpu, &buffer) {
                     Ok(bundle) => Some(Arc::new(bundle)),
                     Err(e) => {
-                        eprintln!("rill-compositor: shm upload failed: {e}");
+                        cry!("shm upload failed: {e}");
                         rill_log::dev!(
                             "rill-compositor",
                             "shm_upload_failed",
@@ -3329,6 +3542,295 @@ fn upload_shm(gpu: &DmabufDevice, buffer: &wl_buffer::WlBuffer) -> Result<TexBun
 /// backend made (scancode+8 keycodes, BTN_* button codes, real timestamps —
 /// all-zeros mangled multi-byte sequences like the arrow keys). Returns `true`
 /// when the compositor should exit.
+/// The keyboard half of both input translations: feed the key to the seat
+/// with the compositor-level shortcuts intercepted on the way, so they work
+/// whatever has focus and never reach a client.
+///   Ctrl+Alt+R    toggle session recording
+///   Ctrl+Shift+R  cycle to the next saved rice
+///   F11           (returned) toggle fullscreen — the host's business
+fn key_input(
+    state: &mut Rill,
+    keyboard: &smithay::input::keyboard::KeyboardHandle<Rill>,
+    keycode: Keycode,
+    pressed: KeyState,
+    time: u32,
+) -> bool {
+    let serial = SERIAL_COUNTER.next_serial();
+    let mut toggle = false;
+    let mut cycle_rice = false;
+    let mut toggle_fullscreen = false;
+    keyboard.input::<(), _>(state, keycode, pressed, serial, time, |_, mods, handle| {
+        let sym = handle.modified_sym();
+        // F11 on its own, the convention everywhere else.
+        if sym == Keysym::F11 {
+            toggle_fullscreen = pressed == KeyState::Pressed;
+            return FilterResult::Intercept(());
+        }
+        // Shift makes it `R`; accept both so the binding does not
+        // depend on which symbol the layout reports.
+        let is_r = sym == Keysym::r || sym == Keysym::R;
+        if !is_r || !mods.ctrl {
+            return FilterResult::Forward;
+        }
+        if mods.alt {
+            // Swallow the release too, or the client sees a key it
+            // never saw pressed.
+            toggle = pressed == KeyState::Pressed;
+            return FilterResult::Intercept(());
+        }
+        if mods.shift {
+            cycle_rice = pressed == KeyState::Pressed;
+            return FilterResult::Intercept(());
+        }
+        FilterResult::Forward
+    });
+    if toggle {
+        let note = state.toggle_recording();
+        say!("{note}");
+    }
+    if cycle_rice {
+        cycle_to_next_rice();
+    }
+    toggle_fullscreen
+}
+
+/// The pointer has moved to `pos` (already warped through any effect
+/// shader): hover state, edge bands, and the seat's motion event.
+fn pointer_moved(
+    state: &mut Rill,
+    pointer: &PointerHandle<Rill>,
+    pointer_loc: &mut Point<f64, Logical>,
+    pos: Point<f64, Logical>,
+    time: u32,
+) {
+    *pointer_loc = pos;
+    if state.draw_cursor {
+        state.needs_redraw = true;
+    }
+    // While a resize grab runs the hover is pinned — the pointer
+    // may briefly outrun the band mid-drag, and the cursor must
+    // not flicker back to an arrow.
+    if state.resize_state.is_none() {
+        state.edge_hover = state.foreign_edge_at(pos);
+    }
+    let under = state.surface_under(pos);
+    pointer.motion(
+        state,
+        under,
+        &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time },
+    );
+    pointer.frame(state);
+}
+
+/// A pointer button (`BTN_*` code) at the current location: raise, focus,
+/// popup dismissal, the foreign resize band, then the seat's button event.
+fn pointer_button(
+    state: &mut Rill,
+    keyboard: &smithay::input::keyboard::KeyboardHandle<Rill>,
+    pointer: &PointerHandle<Rill>,
+    pointer_loc: Point<f64, Logical>,
+    button: u32,
+    button_state: ButtonState,
+    time: u32,
+) {
+    let serial = SERIAL_COUNTER.next_serial();
+
+    // On press: raise the window under the cursor and give it keyboard
+    // focus, so clicks and typing go to the same window. Raise and
+    // focus-border both change the picture.
+    state.needs_redraw = true;
+    // First-click-away for popup grabs: a press outside every popup
+    // dismisses the whole chain (popup_done cascades down it) and
+    // keyboard focus returns to the toplevel. The press then goes
+    // through to whatever is under it — the menu is gone by the
+    // time the click lands, which is how it reads on screen too.
+    if button_state == ButtonState::Pressed
+        && state.popup_grab.is_some()
+        && state.popup_under(pointer_loc).is_none()
+        && let Some((_, root)) = state.popup_grab.take()
+    {
+        let popups: Vec<_> = PopupManager::popups_for_surface(&root).collect();
+        for (popup, _) in popups {
+            let _ = PopupManager::dismiss_popup(&root, &popup);
+        }
+    }
+    if button_state == ButtonState::Pressed
+        && let Some(window) = state.window_under(pointer_loc)
+    {
+        state.space.raise_element(&window, true);
+        if let Some(toplevel) = window.toplevel() {
+            let surface = toplevel.wl_surface().clone();
+            // Give the same client keyboard *and* data-device focus, so
+            // the focused window can own the clipboard selection
+            // (copy/paste). Without the latter, clipboard is inert.
+            let client = surface.client();
+            keyboard.set_focus(state, Some(surface), serial);
+            set_data_device_focus(&state.display_handle, &state.seat, client);
+        }
+    }
+    // A left press in a foreign window's resize band starts the
+    // same grab a client's xdg resize_request would. It has to
+    // start here: the client never receives pointer events in the
+    // band, so it can never ask. The grab is set before the button
+    // event, which then lands in the grab (focus cleared), not in
+    // any client.
+    if button_state == ButtonState::Pressed
+        && button == 0x110
+        && state.resize_state.is_none()
+        && let Some((window, edges)) = state.edge_hover.clone()
+    {
+        state.space.raise_element(&window, true);
+        let loc = state.space.element_location(&window).unwrap_or_default();
+        let size = state
+            .window_rect(&window)
+            .map(|r| r.size)
+            .unwrap_or_else(|| window.geometry().size);
+        let initial_rect = Rectangle::new(loc, size);
+        let (top, _bottom, left, _right) = edge_bools(edges);
+        state.resize_state = Some(ResizeState {
+            window: window.clone(),
+            top,
+            left,
+            anchor_right: loc.x + size.w,
+            anchor_bottom: loc.y + size.h,
+            initial_loc: loc,
+        });
+        let grab = ResizeGrab {
+            start_data: GrabStartData { focus: None, button: 0x110, location: pointer_loc },
+            window,
+            edges,
+            initial_rect,
+        };
+        pointer.set_grab(state, grab, serial, Focus::Clear);
+    }
+    pointer.button(state, &ButtonEvent { serial, time, button, state: button_state });
+    pointer.frame(state);
+}
+
+/// The metal's input translation — libinput's events into the same seat
+/// calls the winit translation above makes, through the same helpers, so
+/// the two are read side by side and a shortcut added to one is in both.
+/// Relative motion accumulates into `pointer_loc`, clamped to the output;
+/// absolute motion (a touchscreen in pointer emulation, a tablet) lands
+/// where it says. Touch as touch is a later rung.
+#[cfg(feature = "drm")]
+fn handle_libinput_event(
+    event: input::Event,
+    state: &mut Rill,
+    keyboard: &smithay::input::keyboard::KeyboardHandle<Rill>,
+    pointer: &PointerHandle<Rill>,
+    pointer_loc: &mut Point<f64, Logical>,
+    start_time: &std::time::Instant,
+    size: Size<i32, Physical>,
+) {
+    use input::event::keyboard::KeyboardEventTrait;
+    use input::event::pointer::{PointerEvent, PointerScrollEvent};
+    let time = start_time.elapsed().as_millis() as u32;
+    let warp = |state: &Rill, mut pos: Point<f64, Logical>| -> Point<f64, Logical> {
+        // Same forward map the winit path applies for a distorting effect
+        // shader: input meets what is visible.
+        if let Some(barrel) = state.pointer_warp {
+            let (w, h) = (state.output_size.w as f64, state.output_size.h as f64);
+            if w > 0.0 && h > 0.0 {
+                let nx = pos.x / w * 2.0 - 1.0;
+                let ny = pos.y / h * 2.0 - 1.0;
+                let scale = 1.0 + barrel * (nx * nx + ny * ny);
+                pos = ((nx * scale * 0.5 + 0.5) * w, (ny * scale * 0.5 + 0.5) * h).into();
+            }
+        }
+        pos
+    };
+    match event {
+        input::Event::Keyboard(input::event::KeyboardEvent::Key(key)) => {
+            // libinput speaks evdev codes; xkb keycodes sit 8 above them.
+            let keycode = Keycode::from(key.key() + 8);
+            let pressed = match key.key_state() {
+                input::event::keyboard::KeyState::Pressed => KeyState::Pressed,
+                input::event::keyboard::KeyState::Released => KeyState::Released,
+            };
+            // F11 has no host window to fullscreen on the metal: ignored.
+            let _ = key_input(state, keyboard, keycode, pressed, time);
+        }
+        input::Event::Pointer(PointerEvent::Motion(m)) => {
+            let raw: Point<f64, Logical> = (
+                (pointer_loc.x + m.dx()).clamp(0.0, (size.w - 1).max(0) as f64),
+                (pointer_loc.y + m.dy()).clamp(0.0, (size.h - 1).max(0) as f64),
+            )
+                .into();
+            let pos = warp(state, raw);
+            pointer_moved(state, pointer, pointer_loc, pos, time);
+        }
+        input::Event::Pointer(PointerEvent::MotionAbsolute(m)) => {
+            let raw: Point<f64, Logical> = (
+                m.absolute_x_transformed(size.w.max(1) as u32),
+                m.absolute_y_transformed(size.h.max(1) as u32),
+            )
+                .into();
+            let pos = warp(state, raw);
+            pointer_moved(state, pointer, pointer_loc, pos, time);
+        }
+        input::Event::Pointer(PointerEvent::Button(b)) => {
+            let button_state = match b.button_state() {
+                input::event::pointer::ButtonState::Pressed => ButtonState::Pressed,
+                input::event::pointer::ButtonState::Released => ButtonState::Released,
+            };
+            pointer_button(state, keyboard, pointer, *pointer_loc, b.button(), button_state, time);
+        }
+        input::Event::Pointer(PointerEvent::ScrollWheel(s)) => {
+            // Discrete wheel: v120 detents, and the same 15 px per notch
+            // the winit translation uses.
+            let mut frame = AxisFrame::new(time).source(AxisSource::Wheel);
+            for (axis, ours) in [
+                (input::event::pointer::Axis::Horizontal, Axis::Horizontal),
+                (input::event::pointer::Axis::Vertical, Axis::Vertical),
+            ] {
+                if s.has_axis(axis) {
+                    let v120 = s.scroll_value_v120(axis);
+                    frame = frame.value(ours, v120 / 120.0 * 15.0).v120(ours, v120 as i32);
+                }
+            }
+            pointer.axis(state, frame);
+            pointer.frame(state);
+        }
+        input::Event::Pointer(PointerEvent::ScrollFinger(s)) => {
+            let mut frame = AxisFrame::new(time).source(AxisSource::Finger);
+            for (axis, ours) in [
+                (input::event::pointer::Axis::Horizontal, Axis::Horizontal),
+                (input::event::pointer::Axis::Vertical, Axis::Vertical),
+            ] {
+                if s.has_axis(axis) {
+                    frame = frame.value(ours, s.scroll_value(axis));
+                }
+            }
+            pointer.axis(state, frame);
+            pointer.frame(state);
+        }
+        input::Event::Pointer(PointerEvent::ScrollContinuous(s)) => {
+            let mut frame = AxisFrame::new(time).source(AxisSource::Continuous);
+            for (axis, ours) in [
+                (input::event::pointer::Axis::Horizontal, Axis::Horizontal),
+                (input::event::pointer::Axis::Vertical, Axis::Vertical),
+            ] {
+                if s.has_axis(axis) {
+                    frame = frame.value(ours, s.scroll_value(axis));
+                }
+            }
+            pointer.axis(state, frame);
+            pointer.frame(state);
+        }
+        input::Event::Device(input::event::DeviceEvent::Added(d)) => {
+            use input::event::EventTrait;
+            let dev = d.device();
+            say!("input device added: {} ({})", dev.name(), dev.sysname());
+        }
+        input::Event::Device(input::event::DeviceEvent::Removed(d)) => {
+            use input::event::EventTrait;
+            say!("input device removed: {}", d.device().name());
+        }
+        _ => {}
+    }
+}
+
 fn handle_window_event(
     event: WindowEvent,
     state: &mut Rill,
@@ -3386,47 +3888,7 @@ fn handle_window_event(
                 ElementState::Pressed => KeyState::Pressed,
                 ElementState::Released => KeyState::Released,
             };
-            let serial = SERIAL_COUNTER.next_serial();
-            // Compositor-level shortcuts, intercepted here so they work
-            // whatever has focus and never reach the client.
-            //   Ctrl+Alt+R    toggle session recording
-            //   Ctrl+Shift+R  cycle to the next saved rice
-            let mut toggle = false;
-            let mut cycle_rice = false;
-            let mut toggle_fullscreen = false;
-            keyboard.input::<(), _>(state, keycode, pressed, serial, time, |_, mods, handle| {
-                let sym = handle.modified_sym();
-                // F11 on its own, the convention everywhere else.
-                if sym == Keysym::F11 {
-                    toggle_fullscreen = pressed == KeyState::Pressed;
-                    return FilterResult::Intercept(());
-                }
-                // Shift makes it `R`; accept both so the binding does not
-                // depend on which symbol the layout reports.
-                let is_r = sym == Keysym::r || sym == Keysym::R;
-                if !is_r || !mods.ctrl {
-                    return FilterResult::Forward;
-                }
-                if mods.alt {
-                    // Swallow the release too, or the client sees a key it
-                    // never saw pressed.
-                    toggle = pressed == KeyState::Pressed;
-                    return FilterResult::Intercept(());
-                }
-                if mods.shift {
-                    cycle_rice = pressed == KeyState::Pressed;
-                    return FilterResult::Intercept(());
-                }
-                FilterResult::Forward
-            });
-            if toggle {
-                let note = state.toggle_recording();
-                println!("rill-compositor: {note}");
-            }
-            if cycle_rice {
-                cycle_to_next_rice();
-            }
-            if toggle_fullscreen {
+            if key_input(state, keyboard, keycode, pressed, time) {
                 // Borderless on the monitor the window is already on, so it
                 // never jumps screens on the way in.
                 let next = match window.fullscreen() {
@@ -3451,98 +3913,13 @@ fn handle_window_event(
                     pos = ((nx * scale * 0.5 + 0.5) * w, (ny * scale * 0.5 + 0.5) * h).into();
                 }
             }
-            *pointer_loc = pos;
-            if state.draw_cursor {
-                state.needs_redraw = true;
-            }
-            // While a resize grab runs the hover is pinned — the pointer
-            // may briefly outrun the band mid-drag, and the cursor must
-            // not flicker back to an arrow.
-            if state.resize_state.is_none() {
-                state.edge_hover = state.foreign_edge_at(pos);
-            }
-            let under = state.surface_under(pos);
-            pointer.motion(
-                state,
-                under,
-                &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time },
-            );
-            pointer.frame(state);
+            pointer_moved(state, pointer, pointer_loc, pos, time);
         }
         WindowEvent::MouseInput { state: btn_state, button, .. } => {
-            let serial = SERIAL_COUNTER.next_serial();
             let button_state = match btn_state {
                 ElementState::Pressed => ButtonState::Pressed,
                 ElementState::Released => ButtonState::Released,
             };
-            // On press: raise the window under the cursor and give it keyboard
-            // focus, so clicks and typing go to the same window. Raise and
-            // focus-border both change the picture.
-            state.needs_redraw = true;
-            // First-click-away for popup grabs: a press outside every popup
-            // dismisses the whole chain (popup_done cascades down it) and
-            // keyboard focus returns to the toplevel. The press then goes
-            // through to whatever is under it — the menu is gone by the
-            // time the click lands, which is how it reads on screen too.
-            if button_state == ButtonState::Pressed
-                && state.popup_grab.is_some()
-                && state.popup_under(*pointer_loc).is_none()
-                && let Some((_, root)) = state.popup_grab.take()
-            {
-                let popups: Vec<_> = PopupManager::popups_for_surface(&root).collect();
-                for (popup, _) in popups {
-                    let _ = PopupManager::dismiss_popup(&root, &popup);
-                }
-            }
-            if button_state == ButtonState::Pressed
-                && let Some(window) = state.window_under(*pointer_loc)
-            {
-                state.space.raise_element(&window, true);
-                if let Some(toplevel) = window.toplevel() {
-                    let surface = toplevel.wl_surface().clone();
-                    // Give the same client keyboard *and* data-device focus, so
-                    // the focused window can own the clipboard selection
-                    // (copy/paste). Without the latter, clipboard is inert.
-                    let client = surface.client();
-                    keyboard.set_focus(state, Some(surface), serial);
-                    set_data_device_focus(&state.display_handle, &state.seat, client);
-                }
-            }
-            // A left press in a foreign window's resize band starts the
-            // same grab a client's xdg resize_request would. It has to
-            // start here: the client never receives pointer events in the
-            // band, so it can never ask. The grab is set before the button
-            // event, which then lands in the grab (focus cleared), not in
-            // any client.
-            if button_state == ButtonState::Pressed
-                && button == MouseButton::Left
-                && state.resize_state.is_none()
-                && let Some((window, edges)) = state.edge_hover.clone()
-            {
-                state.space.raise_element(&window, true);
-                let loc = state.space.element_location(&window).unwrap_or_default();
-                let size = state
-                    .window_rect(&window)
-                    .map(|r| r.size)
-                    .unwrap_or_else(|| window.geometry().size);
-                let initial_rect = Rectangle::new(loc, size);
-                let (top, _bottom, left, _right) = edge_bools(edges);
-                state.resize_state = Some(ResizeState {
-                    window: window.clone(),
-                    top,
-                    left,
-                    anchor_right: loc.x + size.w,
-                    anchor_bottom: loc.y + size.h,
-                    initial_loc: loc,
-                });
-                let grab = ResizeGrab {
-                    start_data: GrabStartData { focus: None, button: 0x110, location: *pointer_loc },
-                    window,
-                    edges,
-                    initial_rect,
-                };
-                pointer.set_grab(state, grab, serial, Focus::Clear);
-            }
             // The BTN_* codes smithay's winit backend mapped to.
             let button = match button {
                 MouseButton::Left => 0x110,
@@ -3552,8 +3929,7 @@ fn handle_window_event(
                 MouseButton::Back => 0x116,
                 MouseButton::Other(b) => b as u32,
             };
-            pointer.button(state, &ButtonEvent { serial, time, button, state: button_state });
-            pointer.frame(state);
+            pointer_button(state, keyboard, pointer, *pointer_loc, button, button_state, time);
         }
         WindowEvent::MouseWheel { delta, .. } => {
             let mut frame = AxisFrame::new(time);
@@ -3707,10 +4083,10 @@ impl ClientData for ClientState {
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
         match reason {
             DisconnectReason::ConnectionClosed => {
-                println!("rill-compositor: client {client_id:?} disconnected")
+                say!("client {client_id:?} disconnected")
             }
-            DisconnectReason::ProtocolError(e) => println!(
-                "rill-compositor: killed client {client_id:?} — protocol error on \
+            DisconnectReason::ProtocolError(e) => say!(
+                "killed client {client_id:?} — protocol error on \
                  {} (code {}): {}",
                 e.object_interface, e.code, e.message
             ),
@@ -5017,11 +5393,11 @@ fn cycle_to_next_rice() {
     let Some(config) = theme.parent() else { return };
     match rill_appkit::rices::next(config, &theme) {
         Some(name) => match rill_appkit::rices::load(config, &theme, &name) {
-            Ok(()) => println!("rill-compositor: rice {name}"),
-            Err(e) => eprintln!("rill-compositor: rice {name} failed to load: {e}"),
+            Ok(()) => say!("rice {name}"),
+            Err(e) => cry!("rice {name} failed to load: {e}"),
         },
-        None => println!(
-            "rill-compositor: no saved rices in {}",
+        None => say!(
+            "no saved rices in {}",
             rill_appkit::rices::dir(config).display()
         ),
     }

@@ -11,7 +11,10 @@
 # only libxkbcommon beyond libc/libm/libgcc, because Wayland, Vulkan, EGL and
 # GBM are all dlopened at runtime. The *linker* still wants the unversioned
 # .so names present, which is what these -dev packages provide (the same job
-# the openSUSE libshim does in demo-desktop.sh).
+# the openSUSE libshim does in demo-desktop.sh). libinput, libseat and libudev
+# are the `--features drm` set (milestone 15b): those three are linked, not
+# dlopened, and the development box has no headers for them — the container
+# is where the metal builds.
 FROM debian:trixie
 
 ARG RUST_VERSION=1.98.0
@@ -24,6 +27,7 @@ RUN dpkg --add-architecture arm64 && apt-get update && apt-get install --assume-
         libegl-dev:arm64 libgles-dev:arm64 libgl-dev:arm64 \
         libgbm-dev:arm64 \
         libasound2-dev:arm64 \
+        libinput-dev:arm64 libseat-dev:arm64 libudev-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH

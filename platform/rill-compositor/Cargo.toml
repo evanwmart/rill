@@ -51,13 +51,16 @@ libc.workspace = true
 # no C headers, so the gate is about keeping the nested build lean, not
 # about what the dev box can compile.
 drm = { version = "0.14", optional = true }
+libseat = { version = "0.2.3", default-features = false, optional = true }
+udev = { version = "0.9", optional = true }
+input = { version = "0.9", features = ["udev", "libinput_1_19"], optional = true }
 
 [features]
 # `--backend drm` (docs/bare-metal-plan.md: one binary, two backends). Off
 # by default: the winit backend is how development happens and is not a
 # stepping stone. The feature exists so the nested build never carries the
 # metal, not the other way around.
-drm = ["dep:drm"]
+drm = ["dep:drm", "dep:input", "dep:libseat", "dep:udev"]
 
 [dev-dependencies]
 # Test-only: the theme-path rule is mirrored from rill-viewport (see

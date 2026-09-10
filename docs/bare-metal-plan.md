@@ -378,3 +378,288 @@ Answered yes, on the workstation, no screen needed:
 Still Pi-only: the framebuffer import and the flip. But the pixels that
 will land on the glass are now produced by the real renderer and proven
 correct in memory here.
+
+### Phase 0.2 — on the Pi: the import holds, the flip waits for master (2026-09-08)
+
+The plan's step 1 gate is passed, MEASURED with `vulkaninfo` on the
+reference Pi 5 (V3DV Mesa 25.0.7, API 1.3.305): `VK_EXT_external_memory_dma_buf`,
+`VK_EXT_image_drm_format_modifier` (rev 2), `VK_KHR_external_memory_fd`,
+`VK_EXT_physical_device_drm`, `VK_KHR_external_semaphore_fd` — all present.
+
+`rill-compositor --backend drm` (cross-built with `--features drm`, run
+as the ordinary user over SSH while the Pi OS desktop session was still
+up) got this far on real hardware:
+
+```text
+wgpu on V3D 7.1.10.2
+/dev/dri/card1                       ← the vc4 KMS card, not v3d's render-only card0
+  HDMI-A-1 connected, 6 modes        ← the forced video= mode, no panel attached
+  HDMI-A-2 disconnected, 0 modes
+lighting HDMI-A-1 at 1280x800@60
+  scanout buffer 0 imported as fb framebuffer::Handle(685) (modifier 0x0)
+  scanout buffer 1 imported as fb framebuffer::Handle(686) (modifier 0x0)
+Error: modeset refused: this process is not DRM master — another compositor
+       (a desktop session) owns the card; stop it, or run from a VT this process owns
+```
+
+So the two things Phase 0 could not prove on the workstation split: the
+**framebuffer import is proven** — `alloc_scanout` on V3DV → dmabuf fd →
+`PRIME_FD_TO_HANDLE` → `ADDFB2` with the linear modifier, accepted by
+vc4 — and the **flip is not yet**, only because labwc held master. The
+non-master run was worth doing on purpose: `ADDFB2` and the PRIME import
+are unprivileged ioctls, so everything short of the modeset can be
+exercised without touching the session, and the backend now names each
+stage on its own line and turns the modeset's bare `EACCES` into a
+sentence (both added after the first run stopped at an unlabeled
+permission error).
+
+Remaining for 15a: stop lightdm (`sudo systemctl stop lightdm`, which
+takes labwc and wayvnc with it), rerun, and count flip-done events. With
+no panel on the forced output the demo is the log line, not a picture —
+the wallpaper on glass wants the TV plugged back in for the photo.
+
+### 15a — it lights up: HOLDS on the Pi (2026-09-08, later the same day)
+
+With lightdm stopped (`sudo systemctl stop lightdm`, labwc and wayvnc
+gone with it), the same binary still refused the modeset. Nothing else
+held the card; **the process itself did.** DRM master goes to the first
+file that opens the primary node while no master exists, and V3DV opens
+the display card when the Vulkan device comes up — so the Vulkan fd was
+master and the backend's own fd was refused. Fix: open the card *before*
+creating the GPU device, then `SET_MASTER` explicitly and log the answer
+(a refusal is a line, not a death, since the first-open grant may already
+have happened). Two lines of reordering; a whole rung of difference.
+
+```text
+/dev/dri/card1
+  HDMI-A-1 connected, 6 modes
+DRM master acquired
+wgpu on V3D 7.1.10.2
+lighting HDMI-A-1 at 1280x800@60
+  scanout buffer 0 imported as fb framebuffer::Handle(680) (modifier 0x0)
+  scanout buffer 1 imported as fb framebuffer::Handle(681) (modifier 0x0)
+modeset up — flipping
+80 flips clean — 15a light-up holds          (40 s run; a 10 s run: 20 flips)
+```
+
+MEASURED alongside, 20 s into the 40 s run, Pi 5 1 GB, no clients, no
+desktop session underneath:
+
+```text
+PSS 58.3 MiB   VmRSS 60.5   VmHWM 61.0   threads 3   47.7 °C
+connector: connected + enabled (sysfs)   kernel log: only the HDMI-audio
+"Unknown ELD version 0" chatter a forced mode with no EDID always produces
+```
+
+That 58 MiB is the bare-metal floor for *this* build — V3DV + wgpu + the
+renderer + two 1280x800 scanout images + one offscreen target — and it is
+not comparable to the nested figures (28–66 MiB) in either direction: no
+Wayland frontend, no clients, no history recorder, but also a Vulkan
+instance the nested path shares with the host. The number that matters
+arrives with 15c, when the same process hosts the desktop.
+
+One observation, recorded rather than explained: `CmaFree` was 64 KiB
+at idle (of 65,536) and 160 KiB during the run, and the run did not
+care — the scanout images come from V3DV's own allocator, not CMA, and
+vc4 imported and scanned them out with the pool empty. The 2026-08-24
+soak launch found CMA starvation fatal *through the nested path*
+(`Surface::configure` → V3DV swapchain → CmaFree 0); the DRM path did
+not hit that, and the appliance-profile `cma=128M` item stays filed as
+headroom, not as a 15a blocker.
+
+*15a's demo, per the ladder: "a Pi with no desktop under it, showing the
+Rill wallpaper."* The scene flipped is the renderer's stand-in card with
+its accent bar alternating between two buffers; with no panel on the
+forced output the evidence is the flip-done count and the connector's
+`enabled`, and the photograph waits for the TV. 15b (libinput, seat, VT
+switching that survives) is next on the ladder.
+
+### 15b — it is usable: the hosted desktop composites and presents on the metal (2026-09-08)
+
+The DRM backend grew from a light-up diagnostic into the real thing: the
+same `main` loop drives both backends, matched at five seams (pump, size,
+acquire, present, budget) and nowhere else. `--backend drm` now hosts
+Wayland clients; `--backend drm-lightup` keeps the standalone diagnostic.
+
+**MEASURED on the reference Pi 5, over SSH, lightdm stopped:** the dock
+and one meter widget ran as clients of the compositor on bare vc4/KMS —
+no labwc, no host compositor. Screenshot captured by a new `SIGUSR2`
+readback path (the forced HDMI output has no panel; a kiosk in the field
+has no one at it), pulled to the workstation:
+
+* Dock strip with the Rill logo and live clock, the meter widget window
+  drawn with its focus glow, and — with the demo server up — the gauges
+  streaming real values (mem 327M/991M, disk 9.3G/28.7G, load 0.00). The
+  whole path proven: wgpu composite → dmabuf export → KMS framebuffer
+  import → page flip, hosting a real vector client.
+* Compositor PSS ~61 MiB (up from 15a's 58 with no clients; the two
+  vector clients add ~5 MiB each). frames tracked the workload.
+* **libinput came up on the seat:** `udev_assign_seat(seat0)` succeeded
+  and the device-added events enumerated the board's input nodes
+  (`pwr_button`, the two HDMI audio jacks). No HID was attached to this
+  bench Pi, so no keypress or pointer motion was driven through — the
+  translation compiles and the pipeline is live, the events had nothing
+  to carry.
+
+**How device access resolves, MEASURED:** libinput and DRM nodes open
+through libseat when a seat is active, and fall back to direct opens when
+it is not. An SSH login is a session that never becomes the active one on
+seat0, so this run took the direct path and said so
+(`seat seat0 never became active … opening devices directly; no VT
+switching on this run`). That is the honest state: **the seat
+pause/resume and VT-switch survival code paths exist but are UNTESTED**,
+because testing them needs a console session (the active seat) that an
+SSH run is not. The card-before-Vulkan master ordering from 15a still
+holds and is now inside `Metal::open`.
+
+**What 15b still owes, and why it is a hands-on/console task:**
+
+* Input actually driving the desktop — needs either a physical keyboard
+  and mouse on the Pi, or root access to `/dev/uinput` to inject a
+  synthetic device (the node is `root:root`, so either needs privilege
+  this SSH user does not have).
+* VT-switch pause/resume survival — needs a real logind seat, i.e. a
+  launch from the console (tty1 autologin is already configured), not
+  SSH. This is the classic place bare-metal compositors die (risks.md),
+  and it is written but unproven.
+
+Both fold naturally into 15c (the autologin session *is* the console
+seat), so the honest ladder position is: 15b's rendering half is done and
+photographed; 15b's input/seat half is written and waits for a console
+run, which 15c sets up anyway.
+
+**On a real panel, 2026-09-08:** the forced 1280x800 output was plugged
+into a physical TV and the desktop came up on the glass — clock ticking,
+the meter widget's gauges updating live (photo:
+`bench-results/2026-09-08_metal/on-panel-tv.jpg`). This retires the "a
+screen nobody can see" caveat for the rendering half: 15a's demo goal
+(*"a Pi with no desktop under it, showing the Rill desktop"*) is now
+literally photographed, and the readback path (`SIGUSR2`) and the panel
+agree. The TV accepted the forced mode directly, so the mode-mismatch
+worry did not bite this display. Still unproven, unchanged: input driving
+it and VT-switch survival.
+
+### 15b/15c prep — the session service and the input harness (2026-09-08)
+
+Everything the remaining 15b/15c work needs that does *not* require a
+privileged action is built and staged; what remains is one reviewed `sudo`
+run, after which input and VT-switch survival are testable over SSH.
+
+* **Zombie reaped.** The V3DV driver forks a helper at startup it never
+  waits on — one stable zombie, measured across four hours on the Pi, not
+  accumulating. The compositor loop now calls a `WNOHANG` reaper each
+  frame (`reap_children`), correct hardening for a session that runs for
+  weeks whatever the fork's origin. Safe because the compositor never
+  `wait`s on a child it tracks (parec and the clients are both
+  fire-and-forget).
+* **`deploy/pi/rill-session.{sh,service}`** — the 15c kiosk session.
+  The service is modeled on cage/greetd: `PAMName=login` + `TTYPath=/dev/tty1`
+  is what makes logind hand it a *real* session on seat0, which is the
+  whole point — the DRM/libseat path only becomes active, and only
+  survives VT switches, inside such a session. It `Conflicts` lightdm
+  (one owner of the card) and restarts on failure.
+* **`deploy/pi/99-rill-uinput.rules`** opens `/dev/uinput` to the `input`
+  group, and **`deploy/pi/uinput-inject.py`** (stdlib only) creates a
+  virtual keyboard + pointer and plays a scripted sequence — so 15b's
+  "input drives the desktop" can be proven over SSH with a screenshot,
+  no physical HID and no one at the Pi. `demo` walks to the dock logo,
+  clicks it (launcher menu), then taps Ctrl+Shift+R (rice cycle) — both
+  visible in a readback.
+* **`deploy/pi/install-15c.sh`** batches the privileged half into one
+  reviewed script: install the service, open uinput, disable lightdm,
+  enable rill-session. It deliberately does not auto-start (a second
+  compositor would fight for the card); the operator starts it or reboots.
+
+**The one gate, and the test plan behind it.** Run `sudo bash
+~/deploy/install-15c.sh` on the Pi, then `sudo systemctl start
+rill-session`. That gives Rill the active seat0 session on tty1 — no
+reboot needed. Then, over SSH:
+
+1. `chvt 2 && sleep 2 && chvt 1` — the compositor should log `seat
+   disabled — pausing` then `seat is ours again — resuming`, re-modeset,
+   and a screenshot after should match before. **This is the risk the
+   whole milestone was written around** (risks.md: device revocation on
+   VT switch), and it is the first thing the real seat lets us test.
+2. `~/deploy/uinput-inject.py demo`, screenshot before/after — the
+   launcher menu open and the rice changed is input driving the desktop.
+
+Only after those two pass is 15b's input/seat half MEASURED rather than
+merely written; 15c's boot-to-Rill (`boot_to_shell_ms`) follows from the
+same service via a reboot.
+
+### 15b on the seat — input PROVEN, VT-switch not yet exercised (2026-09-08→09)
+
+`rill-session.service` started and logind put it on a real session:
+session 520, seat0, tty1, compositor as leader. It came up at the TV's
+native **3840x2160** (the service re-probed the connector and took the
+EDID's preferred mode over the forced 1280x800). RSS ~62 MiB at 4K.
+
+**Input is proven.** `sudo test-15b.sh` loaded uinput, and the injector's
+pointer move put the cursor mid-frame in the readback (`15b-2-pointer.png`)
+— a virtual device over `/dev/uinput` → libinput → the compositor → the
+drawn cursor. The libinput translation works on real hardware.
+
+**The seat finding.** The session shows **Active=no**: the foreground
+console is VT7 (a leftover from the two weeks lightdm ran there), while
+the compositor's session is on VT1, in the background. So libseat's
+`Enable` never fired, `Session::open` hit its 5 s timeout and fell back to
+**Direct opens + a forced `SET_MASTER`**, and the compositor is scanning
+out by brute force rather than cooperating with the seat. That is why the
+`chvt 2 → back` test logged no pause/resume: it toggled VT7↔VT2 and never
+touched the compositor's VT1, and a force-master compositor ignores VT
+state anyway. It *survived* (still painting after), but the pause/resume
+path was not run.
+
+Two consequences, recorded:
+* **VT-switch survival is still unproven**, and the environment to prove
+  it is a clean boot: with lightdm disabled, VT1 is the foreground console
+  at boot, the session goes Active, libseat `Enable` fires, and the
+  compositor runs in seat mode where `chvt` actually pauses and resumes
+  it. That boot *is* 15c, so 15b's last piece and 15c's deliverable are
+  the same reboot.
+* **A robustness nit for the kiosk** (filed, not yet fixed): starting the
+  compositor while its VT is in the background makes it force-grab master
+  in Direct mode instead of waiting for the seat. Right on a boot (VT1 is
+  foreground); wrong on a mid-session start. Worth making the seat path
+  prefer waiting for `Enable` over the Direct fallback when a seat exists.
+
+
+### 15b/15c status, honestly (2026-09-09)
+
+**15c — DONE, MEASURED.** The Pi boots straight into Rill: `rill-session.service`
+on `graphical.target`, lightdm disabled, no display manager. The booted
+compositor is the leader of an `Active=yes` session on seat0/VT1, at the TV's
+native 3840x2160 (EDID preferred over the forced mode), ~62 MiB RSS, running a
+live animated background rice. Auto-starts on power-on.
+
+**VT-switch — SURVIVES, MEASURED (mechanism not logged).** `chvt 2 → chvt 1`
+against the booted compositor: it stayed alive and kept rendering — the clock
+advanced 11:19→11:23 and the animation progressed across the switch
+(`bench-results/2026-09-08_metal/15b/vt-{0-before,1-after}.png`). It did not
+die on device revocation, which is the milestone's bar. Whether it survived by
+the seat's pause/resume path or by force-holding DRM master was NOT captured,
+because the compositor's stdout goes to the tty (not the journal) and this
+run's Active check read the wrong (stale) session.
+
+**Input — PROVEN in Direct mode, UNCONFIRMED in the booted seat config.**
+The earlier Direct-mode run (pre-boot) moved the cursor to mid-screen from an
+injected uinput pointer — the libinput translation works
+(`15b-2-pointer.png`). But in the *booted* seat-mode config, injected pointer
+motion did NOT visibly move the cursor in two tries (`vt-2-pointer.png`,
+recheck). Either input is not reaching the compositor in seat mode (a real
+bug: hotplugged uinput device opened via libseat), or the cursor is not being
+drawn over this fullscreen-shader rice. Cannot tell without the compositor's
+log.
+
+**Two harness lessons banked:** a `>> logfile` redirect on the exec'd
+compositor crash-looped the service 455× (reverted, self-heals since the
+service re-reads the script); a mid-life `systemctl restart` does not reliably
+re-enter the active seat, only a boot does.
+
+**The clean way to finish (needs one privileged pass):** make the compositor
+log to the journal — set `StandardOutput=journal`/`StandardError=journal` to
+actually capture stdout (or a robust logfile that cannot fail the exec) — then
+one boot, and a corrected test that (a) selects the session whose Leader is the
+compositor's MainPID, and (b) reads the compositor's own `seat enabled/disabled`
+and `input device added` lines. That resolves both open questions —
+seat-mode input and the VT pause/resume mechanism — in a single run.

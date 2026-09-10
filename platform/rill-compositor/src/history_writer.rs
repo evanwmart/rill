@@ -168,7 +168,7 @@ fn writer_thread(dir: PathBuf, device: String, kek: Option<Kek>, rx: Receiver<No
             if p.extension().is_some_and(|x| x == "rhs")
                 && let Err(err) = seal_path_with(&p, kek.as_ref())
             {
-                eprintln!("rill-compositor: history: could not seal {}: {err}", p.display());
+                cry!("history: could not seal {}: {err}", p.display());
             }
         }
     }
@@ -184,15 +184,15 @@ fn writer_thread(dir: PathBuf, device: String, kek: Option<Kek>, rx: Receiver<No
         .unwrap_or(rill_history::retention::DEFAULT_FRAME_DAYS);
     for (path, result) in rill_history::retention::age_older_than(&dir, window, kek.as_ref()) {
         match result {
-            Ok(r) if r.events_before != r.events_after => println!(
-                "rill-compositor: history aged {} ({} -> {} bytes)",
+            Ok(r) if r.events_before != r.events_after => say!(
+                "history aged {} ({} -> {} bytes)",
                 path.file_name().unwrap_or_default().to_string_lossy(),
                 r.bytes_before,
                 r.bytes_after
             ),
             Ok(_) => {}
             Err(e) => {
-                eprintln!("rill-compositor: history: could not age {}: {e}", path.display())
+                cry!("history: could not age {}: {e}", path.display())
             }
         }
     }
@@ -233,7 +233,7 @@ impl Writer {
     fn write_failed(&mut self, e: &str) {
         if !self.failed {
             self.failed = true;
-            eprintln!("rill-compositor: history write failed ({e}); recording degraded");
+            cry!("history write failed ({e}); recording degraded");
         }
     }
 
@@ -332,7 +332,7 @@ impl Writer {
     fn rotate(&mut self) {
         if let Some(seg) = self.seg.take() {
             match seg.finish() {
-                Ok(path) => println!("rill-compositor: history sealed {}", path.display()),
+                Ok(path) => say!("history sealed {}", path.display()),
                 Err(e) => self.write_failed(&e.to_string()),
             }
         }
@@ -393,8 +393,8 @@ impl Writer {
     fn close(&mut self) {
         if let Some(seg) = self.seg.take() {
             match seg.finish() {
-                Ok(path) => println!("rill-compositor: history sealed {}", path.display()),
-                Err(e) => eprintln!("rill-compositor: history close failed: {e}"),
+                Ok(path) => say!("history sealed {}", path.display()),
+                Err(e) => cry!("history close failed: {e}"),
             }
         }
     }
@@ -431,8 +431,8 @@ impl TierPolicy {
         let mut out = TierPolicy { floor: 0, apps: Default::default() };
         let Ok(text) = std::fs::read_to_string(path) else { return out };
         let Ok(root) = text.parse::<toml::Table>() else {
-            eprintln!(
-                "rill-compositor: {} is not valid TOML; recording at declared tiers",
+            cry!(
+                "{} is not valid TOML; recording at declared tiers",
                 path.display()
             );
             return out;
@@ -446,8 +446,8 @@ impl TierPolicy {
         if let Some(v) = root.get("floor") {
             match tier(v) {
                 Some(t) => out.floor = t,
-                None => eprintln!(
-                    "rill-compositor: history floor {v} is not a known tier (0..=2); ignored"
+                None => cry!(
+                    "history floor {v} is not a known tier (0..=2); ignored"
                 ),
             }
         }
@@ -457,8 +457,8 @@ impl TierPolicy {
                     Some(t) => {
                         out.apps.insert(app.clone(), t);
                     }
-                    None => eprintln!(
-                        "rill-compositor: history tier for {app:?} is not 0..=2; ignored"
+                    None => cry!(
+                        "history tier for {app:?} is not 0..=2; ignored"
                     ),
                 }
             }

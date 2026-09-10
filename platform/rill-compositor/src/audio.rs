@@ -91,12 +91,12 @@ impl AudioTap {
                     .name("audio-tap".into())
                     .spawn(move || drain(stdout, writer))
                     .expect("spawn audio reader thread");
-                println!("rill-compositor: audio tap on @DEFAULT_MONITOR@");
+                say!("audio tap on @DEFAULT_MONITOR@");
                 Some(ring)
             }
             Err(e) => {
-                eprintln!(
-                    "rill-compositor: no audio tap (parec: {e}) — shaders hear silence"
+                cry!(
+                    "no audio tap (parec: {e}) — shaders hear silence"
                 );
                 None
             }

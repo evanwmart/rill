@@ -212,3 +212,21 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// The local wall clock as `YYYY-MM-DDTHH:MM:SS+HH:MM`, for a line a person
+/// will read next to a sampler's CSV. The Pi soak's compositor log could
+/// place a surface stall only "between two seal filenames" — every
+/// lifecycle line the compositor prints now carries this instead.
+pub fn stamp() -> String {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `secs` and `tm` are valid for the call; localtime_r writes only into `tm`.
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    let off = tm.tm_gmtoff;
+    let (sign, off) = if off < 0 { ('-', -off) } else { ('+', off) };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}{:02}:{:02}",
+        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+        sign, off / 3600, (off % 3600) / 60
+    )
+}
