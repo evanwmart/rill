@@ -376,3 +376,170 @@ Neither question is the staircase: nothing here compounds per-seal, and
 the curve since 23:46 is the flattest this board has produced. Plateau
 so far: **67.1 MiB vs run #1's 130.7** — the 4× tax is at worst a 2.4×,
 pending the week and the two answers above. Day 7 reads Sep 7.
+
+### 2026-09-08, hour 186 — verification run: the staircase is gone, and the soak finds two more things
+
+**Read at 10:03 PT, 18 hours past the 168-hour mark; run left LIVE** (the
+read is scripted from the CSV and the compositor log; the exit-time frame
+report belongs to whichever day the run is stopped). All MEASURED, from
+2,237 five-minute samples and 23 `history sealed` lines.
+
+**Every machine criterion passes, again:**
+
+* Zero crashes, restarts, OOM kills — all four pids original
+  (306684/306694/306699/306707), kernel journal clean since launch.
+* fds frozen at 8/30/9/10. Cache 132 KiB, unmoved for a second week.
+* History linear: 405 → 910 MiB, 23 seals on an 8.0–8.1 h cadence (run
+  #1's was ~8.5 h; the segment-size trigger fires sooner with this
+  run's slightly busier dock — see below). 19 GB of SD card free.
+* Thermal 44.4–50.5 °C, `throttled=0x0` at every sample.
+* files-app 4.7–5.7 MiB flat; meter widget 5.0 → 7.7 MiB in the first
+  five days, then flat at 7.6 since Sep 5.
+
+**The fix does what it says.** Compositor daily maxima: 65.5, 65.8,
+65.2, 69.6, 65.6, 66.2, 66.1, 66.9, 66.6 MiB — a plateau at **~66 MiB
+against run #1's ~130**. `VmHWM` 96.3 MiB, `VmRSS` 71.8, `VmSwap` 10.7
+at read. The 4× tax is now a 2.3× tax, and both hour-19 open questions
+have answers — one from the CSV, one from the source:
+
+* **Open question #2 is closed: every upward step is a seal.** Each
+  positive move >1.5 MiB in a 5-minute window sits 0–5 minutes after a
+  `history sealed` line — including the "+15.5 MiB at 23:43, hours from
+  either seal" step in the hour-19 entry, which was a misread (seal #1
+  landed at 23:41). Per-seal cost decays from +15.1 (first, cold arena)
+  through +7.0, +5.5, +6.0 to +2–3 MiB by day 5, and each is given back
+  within the day. Correction to hour-19, recorded here rather than
+  edited there.
+* **The daily downward step is host weather.** Every reclaim of −2 to
+  −10 MiB lands at 18:36–18:37 on a fixed 24-hour clock (not the 8 h
+  seal cadence), with swap rising ~15 MiB and MemAvailable dipping in
+  the same window. The compositor's own retention pass runs only at
+  boot (history_writer.rs), no systemd timer fires at that time, and
+  the PSS returns at the next seal. Not Rill; noted, not chased.
+* **Open question #1 (the ~18 MiB higher baseline) — PROJECTED cause,
+  read from source, unmeasured:** the writer thread's boot pass calls
+  `seal_path_with` on every existing `.rhs` to seal a crashed
+  predecessor's tail, and that function `read_to_end`s the whole file
+  *before* checking whether it is already sealed. Run #1 booted on an
+  empty directory; this run booted on 20 sealed segments of up to 23
+  MiB — twenty O(file) transients through the glibc arena before the
+  first frame. The two-small-reads check (`read_seal_with`) exists and
+  is what the boot pass's own comment believes it is using. The
+  workstation measurement (compositor PSS at t+1 min, empty vs 20-segment
+  history dir) is the datum that turns this into MEASURED.
+
+**Finding: the dock leaks ~1.6 MiB/day, in BOTH runs.** The dock
+process (`rill-vector --dock`) went 4.3 → 18.2 MiB over 7.8 days,
+linear (least-squares slope 1.59 MiB/day, median 5-minute delta 0 KiB,
+largest single step 0.16 MiB — a slow accrual, not events). `/proc`
+says it is 15.0 MiB of `[heap]`; fds frozen at 9. Re-reading run #1's
+CSV: its dock went **5.1 → 16.4 MiB over six days on the same slope.
+The hour-165 entry's "dock and widget flat" was wrong** — the reader
+looked at the widget and assumed the dock; correction recorded here.
+The leak predates the stream-seal change and is unrelated to it.
+
+*Root cause (read from source, run untouched):* the dock's strip is a
+document with a clock in it, so a new minute is a new document — the
+client regenerates and recompiles the dock KDL when the minute turns
+and hands it to the viewport through `reload_keep_focus`. That method
+sets the in-place flag and then calls `open`, and `open` **pushes the
+new `Source::Generated { bytes }` onto the navigation history stack.**
+The position is always at the end, so the truncate-then-push never
+truncates: one compiled dock document retained per minute, forever.
+Arithmetic: 1.59 MiB/day ÷ 1,440 minutes = ~1.1 KiB per entry, the
+size of a compiled dock strip plus its `Source` — and the "Back" key on
+the dock would, in principle, step through every minute of the week.
+The 1 Hz meter does not leak the same way because live ticks replace
+`history[position]` in place, which is exactly the shape the fix wants.
+On a 1 GB board the horizon is more than a year, so this is a finding
+under the protocol's letter (a monotonic slope of any size), not a
+threat to a run — but a document that regenerates every second would
+hit it 60× faster, and one exists in the widget set.
+
+**One event:** a single `surface error: A timeout was encountered while
+trying to acquire the next frame` between the Sep 5 08:19 and 16:23
+seals. The loop's `sleep(5 ms); continue` handled it, the meter kept
+updating through every sample in that window, and load was 0.00. The
+log line has no timestamp — the seal filenames on either side are the
+only clock — which is its own small finding.
+
+**Verdict against the protocol's letter: PASS on every machine
+criterion, with the dock slope as the run's finding.** The unqualified
+"a week" still waits: this run was read while live, without the day-7
+human poke, and with a known slope in one process. Run #3, on binaries
+carrying the two fixes above, is the one that gets to say it.
+
+Raw CSV and both logs archived at `bench-results/2026-08-31_soak/`.
+
+**Stopped 2026-09-08 10:19 PT at hour 186.6, by decision** (SIGTERM,
+compositor first; exit in 2 s; the final segment `1788883339281.rhs`
+sealed on the way out). MEASURED, from the exit reports:
+
+```text
+uptime          671,910.7 s = 7 d 18.6 h
+frames          1,097,208 over that = mean 1.63 fps against a 60 fps budget
+damage frames   677,107 = 1.01/s — the 1 Hz meter, frames_per_commit=1.00
+frame_ms        mean 7.01, p50 8.25, p95 9.25, p99 12.50, max 4939.9
+acquire_ms      mean 0.06, p95 0.25, max 12.31
+server conn 1   38.3 MB in / 430.3 MB out, lived the whole run, closed by
+                our SIGTERM only
+dock            applied_loads=11,200 over 11,196 minutes of uptime — one
+                document load per clock minute, exactly the push count
+                the root cause above predicts
+meter           applied_loads=654,935 (the 1 Hz ticks that changed)
+```
+
+The one number worse than run #1 is frame max: 4,939.9 ms against
+1,125.2. A single stall — the Sep 5 acquire timeout is the obvious
+candidate, and without log timestamps it cannot be tied to a sample.
+Archive refreshed with the full CSV (2,240 samples) and both logs.
+
+### 2026-09-08, same day — the three fixes, workstation-side, with the boot pass MEASURED
+
+**1. In-place reloads no longer grow the navigation stack.**
+`AppView::reload_keep_focus` now replaces `history[position]` and starts
+the load, instead of routing through `open`. A regression test
+(`crates/rill-viewport/tests/in_place_reload.rs`) drives sixty
+regenerations and asserts the stack stays at one entry, Back is a no-op,
+and a real `open` still pushes; it fails on the old code at the first
+assertion. The dock's `applied_loads=11,200` over 11,196 minutes in the
+exit report above is the same count from the other side.
+
+**2. The seal check reads forty bytes, not the segment.** `seal_path_with`
+now asks `sealed_on_disk` first — the tail mark and a plausible seal
+length, the identical test `seal_region` makes in memory — and only
+reads the body when the answer is no. Test: sealed reads as sealed,
+unsealed as unsealed, a torn tail as unsealed.
+
+The PROJECTED cause of open question #1 is now **MEASURED in isolation**
+(`RILL_SOAK_HIST=<dir> cargo test -p rill-history boot_pass --
+--ignored --nocapture`, release, against the ten largest segments from
+this run, 219 MiB on disk, all sealed):
+
+```text
+                        VmHWM (peak)     VmRSS after the sweep
+old seal_path_with      +44,332 KiB      +22,500 KiB retained
+tail check              +76 KiB          +80 KiB
+```
+
+That retained 22 MiB is the size of the largest segment read into a
+Vec and kept by the allocator as arena high-water — the +18 MiB
+baseline this run carried against run #1's empty directory, to within
+the noise of what else the compositor allocates at boot. The
+whole-compositor version of the same measurement on the workstation
+(PSS at t+30 s, no client, two repetitions each) was *not* usable as a
+first-order datum — the NVIDIA driver's ~400 MiB RSS swings ±30 MiB
+between identical launches — but the populated-directory pairs did
+repeat: old 216.5/216.5 MiB, new 204.2/204.1 MiB, a 12 MiB gap in the
+expected direction. The isolated number is the one this entry claims;
+run #3's launch-time PSS on the Pi is the one that closes it.
+
+**3. Every compositor log line now carries the local wall clock**
+(`say!`/`cry!` in rill-compositor over `rill_log::stamp()`, the
+`YYYY-MM-DDTHH:MM:SS±HH:MM` form the sampler's CSV already uses). The
+next acquire timeout gets a time, and a soak log becomes a timeline
+without the CSV beside it.
+
+Not done, by decision: the 18:36 daily host reclaim (parked); the
+display-loss panic (TODO, appliance robustness); run #3 (needs a
+cross-build from the tree once these land).
