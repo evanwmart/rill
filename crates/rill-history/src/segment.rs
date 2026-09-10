@@ -443,6 +443,15 @@ pub fn seal_path(path: &Path) -> Result<(), SegmentError> {
 }
 
 pub fn seal_path_with(path: &Path, kek: Option<&Kek>) -> Result<(), SegmentError> {
+    // The no-op case first, from the tail mark alone. The recorder's boot
+    // pass calls this for every segment on disk, and until 2026-09-08 the
+    // already-sealed answer came from reading the whole file in: twenty
+    // O(segment) transients through the allocator before the first frame,
+    // which the Pi soak's second run carried as a ~18 MiB higher resident
+    // baseline for the whole week.
+    if sealed_on_disk(path)? {
+        return Ok(());
+    }
     let mut bytes = Vec::new();
     File::open(path)?.read_to_end(&mut bytes)?;
     if seal_region(&bytes).is_some() {
@@ -876,6 +885,27 @@ fn unlock(header: &Header, kek: Option<&Kek>) -> Result<Option<DataKey>, Segment
 /// Locate the seal region, if the tail claims one: returns the byte range of
 /// `[indexes][footer]` (where the chunks end and the seal begins) plus the
 /// region hash the tail asserts.
+/// Whether the file carries a plausible seal tail, read from the last
+/// [`SEAL_TAIL`] bytes only — the same test [`seal_region`] makes on an
+/// in-memory segment, without the segment being in memory. This is the
+/// answer [`seal_path_with`] gives before it considers reading anything.
+pub fn sealed_on_disk(path: &Path) -> Result<bool, SegmentError> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if len < SEAL_TAIL as u64 {
+        return Ok(false);
+    }
+    let mut tail = [0u8; SEAL_TAIL];
+    file.seek(SeekFrom::End(-(SEAL_TAIL as i64)))?;
+    file.read_exact(&mut tail)?;
+    if tail[36..] != SEAL_MAGIC {
+        return Ok(false);
+    }
+    let seal_len = u32::from_be_bytes(tail[32..36].try_into().unwrap()) as u64;
+    Ok(seal_len <= MAX_SEAL as u64 && seal_len + SEAL_TAIL as u64 <= len)
+}
+
 fn seal_region(bytes: &[u8]) -> Option<(usize, usize, [u8; 32])> {
     let tail_at = bytes.len().checked_sub(SEAL_TAIL)?;
     if bytes[tail_at + 36..] != SEAL_MAGIC {
@@ -1346,6 +1376,25 @@ mod tests {
 
     /// Sealing twice is once: the recovery path may race a clean close, and
     /// the second seal must notice the first rather than stacking another.
+    /// The already-sealed answer comes from the tail mark, not the body:
+    /// a sealed file says so from forty bytes, an unsealed one does not,
+    /// and a torn tail (the crash case) is not mistaken for a seal.
+    #[test]
+    fn the_seal_is_visible_from_the_tail_alone() {
+        let path = tmp("tailcheck.rhs");
+        let mut w = SegmentWriter::create(&path, &header(), ChunkCodec::Plain, 0).unwrap();
+        w.append(&ev(1, 1)).unwrap();
+        w.flush().unwrap();
+        assert!(!sealed_on_disk(&path).unwrap(), "unsealed read as sealed");
+        w.finish().unwrap();
+        assert!(sealed_on_disk(&path).unwrap(), "sealed read as unsealed");
+        // Tear the tail: a partial seal is no seal.
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() - 7]).unwrap();
+        assert!(!sealed_on_disk(&path).unwrap(), "torn tail read as sealed");
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn sealing_is_idempotent() {
         let path = tmp("reseal.rhs");
@@ -1506,4 +1555,44 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+}
+
+#[cfg(test)]
+mod boot_pass_cost {
+    //! The recorder's boot sweep, measured: seal every segment in a real
+    //! history directory (all already sealed, so every call is the no-op
+    //! case) and report the process's peak and resting resident set. Run by
+    //! hand against a soak's segments — `RILL_SOAK_HIST=<dir> cargo test -p
+    //! rill-history boot_pass -- --ignored --nocapture`. Numbers, not
+    //! assertions: the claim it backs lives in docs/pi-soak.md.
+    fn kib(field: &str) -> u64 {
+        let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        s.lines()
+            .find(|l| l.starts_with(field))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    #[ignore]
+    fn boot_pass_over_a_soak_history_dir() {
+        let Ok(dir) = std::env::var("RILL_SOAK_HIST") else { return };
+        let (rss0, hwm0) = (kib("VmRSS"), kib("VmHWM"));
+        let mut n = 0;
+        let mut bytes = 0u64;
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "rhs") {
+                bytes += p.metadata().map(|m| m.len()).unwrap_or(0);
+                super::seal_path_with(&p, None).unwrap();
+                n += 1;
+            }
+        }
+        let (rss1, hwm1) = (kib("VmRSS"), kib("VmHWM"));
+        println!(
+            "boot pass over {n} sealed segments ({} MiB on disk): VmRSS {} -> {} KiB, VmHWM {} -> {} KiB (peak +{} KiB, retained +{} KiB)",
+            bytes / 1_048_576, rss0, rss1, hwm0, hwm1, hwm1 - hwm0, rss1 - rss0
+        );
+    }
 }
