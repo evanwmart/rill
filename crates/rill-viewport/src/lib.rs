@@ -1411,10 +1411,26 @@ impl AppView {
 
     /// Reload with a new source while keeping the current focus position — for
     /// in-place regenerations whose element structure is unchanged (e.g. the
-    /// dock re-rendering itself after a palette/override toggle).
+    /// dock re-rendering itself after a palette/override toggle, or when its
+    /// clock turns).
+    ///
+    /// A regeneration is not a navigation: the new source *replaces* the
+    /// current history slot rather than pushing onto the stack. The dock
+    /// regenerates once a minute, and until 2026-09-08 this went through
+    /// [`AppView::open`] — one compiled document retained per minute, which
+    /// the Pi soak measured as 1.6 MiB/day of dock growth over two runs, and
+    /// a Back key that would have stepped through every minute of the week.
     pub fn reload_keep_focus(&mut self, source: Source) {
         self.in_place_once = true;
-        self.open(source);
+        self.history[self.position] = source;
+        self.start_load();
+    }
+
+    /// `(entries, position)` of the navigation stack — what Back and Forward
+    /// have to work with. Exposed so a host (or a test) can tell a
+    /// navigation from a regeneration.
+    pub fn history_depth(&self) -> (usize, usize) {
+        (self.history.len(), self.position)
     }
 
     pub fn back(&mut self) {
