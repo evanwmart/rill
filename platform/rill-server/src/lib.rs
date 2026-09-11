@@ -24,19 +24,11 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
-use rill_log::{Level, level as log_level, push_field};
 
+// The line shape lives in rill-log (`logline!`) so this process and the
+// compositor/vector cannot drift; this only binds the process name.
 macro_rules! log {
-    ($level:ident, $conn:expr, $event:expr $(, $key:ident = $value:expr)* $(,)?) => {
-        // The threshold test still guards the *formatting*; the dev trail
-        // gets the line regardless of threshold, which is its whole point.
-        if Level::$level <= log_level() || rill_log::dev_active() {
-            #[allow(unused_mut)]
-            let mut fields = String::new();
-            $( push_field(&mut fields, stringify!($key), &$value.to_string()); )*
-            rill_log::emit("rill-server", Level::$level, $conn, $event, &fields);
-        }
-    };
+    ($($t:tt)*) => { rill_log::logline!("rill-server", $($t)*) };
 }
 
 /// Record an unknown device's fingerprint in `pending.toml`, so
@@ -1426,7 +1418,7 @@ where
 
 #[cfg(test)]
 mod log_tests {
-    use super::{Level, push_field};
+    use rill_log::{Level, push_field};
 
     /// A line stays parseable whatever the application puts in a value:
     /// device names and status summaries routinely contain spaces, and a

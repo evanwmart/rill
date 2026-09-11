@@ -149,10 +149,11 @@ pub fn dev_emit(proc_name: &str, event: &str, fields: &[(&str, &str)]) {
 /// for the lines nobody had turned on when the bug happened.
 pub fn emit(proc_name: &str, level: Level, conn: u64, event: &str, fields: &str) {
     if level <= self::level() {
+        let ts = stamp();
         if conn == 0 {
-            eprintln!("[{proc_name}] {} {event}{fields}", level.name());
+            eprintln!("{ts} [{proc_name}] {} {event}{fields}", level.name());
         } else {
-            eprintln!("[{proc_name}] {} conn={conn} {event}{fields}", level.name());
+            eprintln!("{ts} [{proc_name}] {} conn={conn} {event}{fields}", level.name());
         }
     }
     if dev_active() {
@@ -166,6 +167,25 @@ pub fn emit(proc_name: &str, level: Level, conn: u64, event: &str, fields: &str)
         fs.push(("fields", fields.trim_start()));
         dev_emit(proc_name, event, &fs);
     }
+}
+
+/// A levelled, field-carrying log line — the shape the server proved and the
+/// compositor and vector now share, so two processes' logs never disagree
+/// on format when you are correlating them (the failure mode the TODO named).
+/// Each process defines a one-line `log!` that fills in its own name:
+/// `macro_rules! log { ($($t:tt)*) => { $crate::logline!("rill-x", $($t)*) } }`.
+/// The threshold guards the *formatting*; the dev trail gets the line
+/// regardless, which is its whole point.
+#[macro_export]
+macro_rules! logline {
+    ($proc:expr, $level:ident, $conn:expr, $event:expr $(, $key:ident = $value:expr)* $(,)?) => {
+        if $crate::Level::$level <= $crate::level() || $crate::dev_active() {
+            #[allow(unused_mut)]
+            let mut fields = ::std::string::String::new();
+            $( $crate::push_field(&mut fields, stringify!($key), &$value.to_string()); )*
+            $crate::emit($proc, $crate::Level::$level, $conn, $event, &fields);
+        }
+    };
 }
 
 /// A trail-only event: never stderr, no level — the navigation, the key

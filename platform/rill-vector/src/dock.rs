@@ -299,7 +299,7 @@ impl Dock {
                 println!("rill-vector: launched app {key:?}");
                 self.children.push(child);
             }
-            Err(e) => eprintln!("rill-vector: could not launch {key:?}: {e}"),
+            Err(e) => rill_log::logline!("rill-vector", Warn, 0, "launch-failed", app = format!("{key:?}"), error = e),
         }
     }
 
@@ -391,7 +391,7 @@ impl Dock {
                 println!("rill-vector: widget {} at {}", widget.app, widget.place);
                 self.widget_children.push((widget.app.clone(), child));
             }
-            Err(e) => eprintln!("rill-vector: could not spawn widget: {e}"),
+            Err(e) => rill_log::logline!("rill-vector", Warn, 0, "widget-spawn-failed", error = e),
         }
     }
 

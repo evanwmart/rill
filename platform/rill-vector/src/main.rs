@@ -79,6 +79,12 @@ const CLOSE_WIDTH: f32 = 40.0;
 /// so rounding or tinting it produced moving corner artifacts). Zero the
 /// first page-sized rect's alpha and return its color so the chrome fill
 /// keeps the page's palette.
+/// Structured, levelled events shared with rill-server and rill-compositor
+/// via rill-log's `logline!`, so the dev trail correlates the three.
+macro_rules! log {
+    ($($t:tt)*) => { rill_log::logline!("rill-vector", $($t)*) };
+}
+
 fn glass_page_background(commands: &mut [DrawCommand], w: f32, h: f32) -> Option<Color> {
     for cmd in commands.iter_mut().take(8) {
         if let DrawCommand::Rect { rect, color, .. } = cmd
@@ -502,7 +508,7 @@ impl App {
             let fd = match memfd_frame(pixels) {
                 Ok(fd) => fd,
                 Err(e) => {
-                    eprintln!("rill-vector: cannot send image {source:?}: {e}");
+                    log!(Warn, 0, "image-send-failed", source = format!("{source:?}"), error = e);
                     continue;
                 }
             };
@@ -854,7 +860,7 @@ impl App {
         let bytes = match rill_ui::stream::encode(&commands) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("rill-vector: dropping a frame that would not encode: {e}");
+                log!(Warn, 0, "frame-dropped", reason = "encode", error = e);
                 return;
             }
         };
@@ -863,7 +869,7 @@ impl App {
         let fd = match memfd_frame(&bytes) {
             Ok(fd) => fd,
             Err(e) => {
-                eprintln!("rill-vector: dropping a frame (memfd): {e}");
+                log!(Warn, 0, "frame-dropped", reason = "memfd", error = e);
                 return;
             }
         };
@@ -1543,7 +1549,7 @@ fn main() {
         app.tick(&qh);
     }
     if let Some(e) = lost {
-        eprintln!("rill-vector: wayland connection lost: {e}");
+        log!(Error, 0, "wayland-lost", error = e);
     }
     // The page's declared goodbye (`closing target=`): fired on the way out,
     // bounded so a gone server cannot hold the window's exit hostage. The
@@ -1556,7 +1562,7 @@ fn main() {
     // are being produced and not delivered, which is a different bug from a
     // clock that is not firing.
     if let Some(view) = &app.view {
-        eprintln!("rill-vector: applied_loads={}", view.applied_loads());
+        log!(Info, 0, "applied-loads", count = view.applied_loads());
     }
 }
 
