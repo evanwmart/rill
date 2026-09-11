@@ -42,6 +42,14 @@ macro_rules! cry {
     };
 }
 
+/// Structured, levelled events — the shape shared with rill-server and
+/// rill-vector via rill-log's `logline!`, so the dev trail correlates the
+/// three. For the events worth typed fields (seat, disconnects, errors);
+/// prose lifecycle stays on `say!`/`cry!`.
+macro_rules! log {
+    ($($t:tt)*) => { rill_log::logline!("rill-compositor", $($t)*) };
+}
+
 mod audio;
 #[cfg(feature = "drm")]
 mod drm_backend;
@@ -1466,6 +1474,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // metal, the seat, the card and libinput (drm_backend.rs). Everything
     // below this match is shared; the loop matches on the presenter at the
     // five seams — pump, size, acquire, present, budget — and nowhere else.
+    // A starved display stack (no output, CMA exhausted) makes the wgpu
+    // swapchain OOM; the default is to panic, which would take the desktop,
+    // the server and the history recorder down over a screen that got
+    // unplugged. The winit path installs a handler that flags OOM here, and
+    // the loop degrades-and-waits on it instead of dying.
+    let display_lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (mut presenter, gpu, surface_format): (Presenter, DmabufDevice, wgpu::TextureFormat) =
         if metal_backend {
             #[cfg(feature = "drm")]
@@ -1499,6 +1513,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let gpu = DmabufDevice::new_on(&instance, Some(&wgpu_surface))
                 .ok_or("no dmabuf-capable Vulkan device")?;
+            {
+                // OOM → degrade (a screen came unplugged); everything else is
+                // our bug and still surfaces loudly.
+                let lost = display_lost.clone();
+                gpu.device.on_uncaptured_error(Box::new(move |e| match e {
+                    wgpu::Error::OutOfMemory { .. } => {
+                        lost.store(true, std::sync::atomic::Ordering::Relaxed)
+                    }
+                    other => log!(Error, 0, "wgpu-error", detail = other),
+                }));
+            }
             // Prefer a non-sRGB surface format: colors were authored against
             // a linear 8-bit pipeline (the GLES path), and client buffers are
             // raw bytes.
@@ -1620,7 +1645,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cmd.args(&client_cmd[1..]).env("WAYLAND_DISPLAY", &socket_name).env_remove("DISPLAY");
         match cmd.spawn() {
             Ok(_) => say!("spawned client {:?}", client_cmd.join(" ")),
-            Err(e) => cry!("could not spawn {:?}: {e}", client_cmd[0]),
+            Err(e) => log!(Warn, 0, "spawn-failed", client = format!("{:?}", client_cmd[0]), error = e),
         }
     }
 
@@ -1663,6 +1688,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse::<f64>().ok())
         .map(|ms| std::time::Duration::from_secs_f64(ms / 1000.0));
     let mut last_frame_end: Option<std::time::Instant> = None;
+    // Whether the current display-loss episode has been logged (log once).
+    let mut display_lost_logged = false;
 
     let start_time = std::time::Instant::now();
     // Lifetime frame count, printed on the way out. The HUD's `render_count`
@@ -2393,6 +2420,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let acquire_started = std::time::Instant::now();
         let (acquired, frame_view) = match &mut presenter {
             Presenter::Winit { wgpu_surface, caps, configured_size, .. } => {
+                // Degrade-and-wait: if the device signalled OOM, keep every
+                // client and the recorder alive, force a fresh configure, back
+                // off, and try again — resume when the output returns.
+                if display_lost.load(std::sync::atomic::Ordering::Relaxed) {
+                    if !display_lost_logged {
+                        log!(Warn, 0, "display-lost", detail = "swapchain oom, degrading");
+                        display_lost_logged = true;
+                    }
+                    *configured_size = None;
+                    display_lost.store(false, std::sync::atomic::Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
                 // (Re)configure the swapchain when the window size changes.
                 if size.w > 0 && size.h > 0 && *configured_size != Some(size) {
                     let reconfigure_started = std::time::Instant::now();
@@ -2429,13 +2468,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 let frame = match wgpu_surface.get_current_texture() {
-                    Ok(frame) => frame,
+                    Ok(frame) => {
+                        if display_lost_logged {
+                            log!(Info, 0, "display-restored");
+                            display_lost_logged = false;
+                        }
+                        frame
+                    }
                     Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
                         *configured_size = None; // reconfigure next iteration
                         continue;
                     }
                     Err(e) => {
-                        cry!("surface error: {e}");
+                        log!(Error, 0, "surface-error", error = e);
                         std::thread::sleep(std::time::Duration::from_millis(5));
                         continue;
                     }
@@ -3077,7 +3122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // A refused flip is the display going away, not the
                     // desktop: report it and keep going — the next frame
                     // tries again, and a VT switch will have paused us.
-                    cry!("present failed: {e}");
+                    log!(Error, 0, "present-failed", error = e);
                 }
             }
         }
@@ -3130,13 +3175,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = display.handle().insert_client(stream, Arc::new(ClientState::default()));
             }
             Ok(None) => {}
-            Err(e) => cry!("accept failed: {e}"),
+            Err(e) => log!(Warn, 0, "accept-failed", error = e),
         }
         if let Err(e) = display.dispatch_clients(&mut state) {
-            cry!("client dispatch failed: {e}");
+            log!(Error, 0, "client-dispatch-failed", error = e);
         }
         if let Err(e) = display.flush_clients() {
-            cry!("client flush failed: {e}");
+            log!(Error, 0, "client-flush-failed", error = e);
         }
         state.space.refresh();
         state.popups.cleanup();
@@ -4083,7 +4128,7 @@ impl ClientData for ClientState {
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
         match reason {
             DisconnectReason::ConnectionClosed => {
-                say!("client {client_id:?} disconnected")
+                log!(Info, 0, "client-disconnected", client = format!("{client_id:?}"))
             }
             DisconnectReason::ProtocolError(e) => say!(
                 "killed client {client_id:?} — protocol error on \

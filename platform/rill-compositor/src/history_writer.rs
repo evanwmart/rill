@@ -168,7 +168,7 @@ fn writer_thread(dir: PathBuf, device: String, kek: Option<Kek>, rx: Receiver<No
             if p.extension().is_some_and(|x| x == "rhs")
                 && let Err(err) = seal_path_with(&p, kek.as_ref())
             {
-                cry!("history: could not seal {}: {err}", p.display());
+                log!(Warn, 0, "seal-failed", segment = p.display(), error = err);
             }
         }
     }
@@ -192,7 +192,7 @@ fn writer_thread(dir: PathBuf, device: String, kek: Option<Kek>, rx: Receiver<No
             ),
             Ok(_) => {}
             Err(e) => {
-                cry!("history: could not age {}: {e}", path.display())
+                log!(Warn, 0, "age-failed", segment = path.display(), error = e)
             }
         }
     }
@@ -332,7 +332,7 @@ impl Writer {
     fn rotate(&mut self) {
         if let Some(seg) = self.seg.take() {
             match seg.finish() {
-                Ok(path) => say!("history sealed {}", path.display()),
+                Ok(path) => log!(Info, 0, "history-sealed", segment = path.display()),
                 Err(e) => self.write_failed(&e.to_string()),
             }
         }
@@ -393,7 +393,7 @@ impl Writer {
     fn close(&mut self) {
         if let Some(seg) = self.seg.take() {
             match seg.finish() {
-                Ok(path) => say!("history sealed {}", path.display()),
+                Ok(path) => log!(Info, 0, "history-sealed", segment = path.display()),
                 Err(e) => cry!("history close failed: {e}"),
             }
         }

@@ -134,14 +134,14 @@ impl Session {
         let flag = active.clone();
         match libseat::Seat::open(move |seat, event| match event {
             libseat::SeatEvent::Enable => {
-                println!("rill-compositor[drm]: seat enabled");
+                rill_log::logline!("rill-compositor", Info, 0, "seat-enabled");
                 flag.store(true, Ordering::SeqCst);
             }
             libseat::SeatEvent::Disable => {
                 // The VT is walking away. Acknowledge at once — logind
                 // revokes our device fds either way, and a compositor that
                 // does not answer holds the switch up for its timeout.
-                println!("rill-compositor[drm]: seat disabled — pausing");
+                rill_log::logline!("rill-compositor", Info, 0, "seat-disabled");
                 flag.store(false, Ordering::SeqCst);
                 let _ = seat.disable();
             }
@@ -509,7 +509,7 @@ fn wait_for_output(
         match pick_output(card)? {
             Some(picked) => return Ok(picked),
             None => {
-                println!("rill-compositor[drm]: no connected connector — waiting");
+                rill_log::logline!("rill-compositor", Warn, 0, "no-connector");
                 for _ in 0..10 {
                     if crate::shutting_down() {
                         return Err("shut down while waiting for a display".into());
