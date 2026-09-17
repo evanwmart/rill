@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use crate::Point;
+use crate::{Color, Point};
 
 /// Coordinate space the vendored set is drawn in.
 pub const ICON_VIEWBOX: f32 = 256.0;
@@ -25,9 +25,13 @@ pub const ICON_VIEWBOX: f32 = 256.0;
 /// 2.5/256 ≈ the old 0.35/24: no visible faceting at UI sizes.
 const FLATTEN_STEP: f32 = 2.5;
 
-/// One icon: its closed rings, already flattened, in viewBox space.
+/// One icon: its closed rings, already flattened, in viewBox space, and
+/// per ring the colour the source fixed for it — `None` for the ordinary
+/// case (Phosphor's `currentColor`: the style's colour), `Some` for a
+/// brand mark whose colours are its own.
 pub struct Icon {
     pub contours: Vec<Vec<Point>>,
+    pub fills: Vec<Option<Color>>,
 }
 
 impl Icon {
@@ -43,6 +47,24 @@ impl Icon {
             points.extend(ring.iter().map(|p| Point::new(x + p.x * scale, y + p.y * scale)));
         }
         (points, rings)
+    }
+
+    /// The icon as colour layers, for marks that carry their own colours:
+    /// consecutive rings with the same fill become one packed path, in
+    /// source order (later paths paint over earlier ones). A `None` fill
+    /// is the caller's colour.
+    pub fn layers(&self, x: f32, y: f32, size: f32) -> Vec<(Option<Color>, Vec<Point>, Vec<u32>)> {
+        let scale = size / ICON_VIEWBOX;
+        let mut out: Vec<(Option<Color>, Vec<Point>, Vec<u32>)> = Vec::new();
+        for (ring, fill) in self.contours.iter().zip(&self.fills) {
+            if out.last().is_none_or(|(f, _, _)| f != fill) {
+                out.push((*fill, Vec::new(), Vec::new()));
+            }
+            let (_, points, rings) = out.last_mut().expect("pushed above");
+            rings.push(ring.len() as u32);
+            points.extend(ring.iter().map(|p| Point::new(x + p.x * scale, y + p.y * scale)));
+        }
+        out
     }
 }
 
@@ -94,6 +116,53 @@ const SOURCES: &[(&str, &str)] = &[
     ("skip-forward", include_str!("../phosphor/skip-forward.svg")),
     ("speaker", include_str!("../phosphor/speaker.svg")), // speaker-high
     ("speaker-mute", include_str!("../phosphor/speaker-mute.svg")), // speaker-simple-slash
+    // Signage: the gate display's travel and weather glyphs (upstream
+    // names in comments where ours differ).
+    ("plane", include_str!("../phosphor/plane.svg")), // airplane-tilt
+    ("ticket", include_str!("../phosphor/ticket.svg")),
+    ("suitcase", include_str!("../phosphor/suitcase.svg")), // suitcase-rolling
+    ("people", include_str!("../phosphor/people.svg")), // users-three
+    ("gate", include_str!("../phosphor/gate.svg")), // door-open
+    ("warning", include_str!("../phosphor/warning.svg")),
+    ("info", include_str!("../phosphor/info.svg")),
+    ("sun", include_str!("../phosphor/sun.svg")),
+    ("cloud", include_str!("../phosphor/cloud.svg")),
+    ("cloud-sun", include_str!("../phosphor/cloud-sun.svg")),
+    ("cloud-rain", include_str!("../phosphor/cloud-rain.svg")),
+    ("pin", include_str!("../phosphor/pin.svg")), // map-pin
+    ("clock", include_str!("../phosphor/clock.svg")),
+    ("plane-fill", include_str!("../phosphor/plane-fill.svg")),
+    ("ticket-fill", include_str!("../phosphor/ticket-fill.svg")),
+    ("suitcase-fill", include_str!("../phosphor/suitcase-fill.svg")),
+    ("people-fill", include_str!("../phosphor/people-fill.svg")),
+    ("gate-fill", include_str!("../phosphor/gate-fill.svg")),
+    ("warning-fill", include_str!("../phosphor/warning-fill.svg")),
+    ("info-fill", include_str!("../phosphor/info-fill.svg")),
+    ("sun-fill", include_str!("../phosphor/sun-fill.svg")),
+    ("cloud-fill", include_str!("../phosphor/cloud-fill.svg")),
+    ("cloud-sun-fill", include_str!("../phosphor/cloud-sun-fill.svg")),
+    ("cloud-rain-fill", include_str!("../phosphor/cloud-rain-fill.svg")),
+    ("pin-fill", include_str!("../phosphor/pin-fill.svg")),
+    // The aircraft in level flight, nose right: the viewport's page-wipe
+    // rides on it (see rill-viewport's `Motion::Wipe`).
+    ("plane-flight", include_str!("../phosphor/plane-flight.svg")), // airplane-in-flight
+    ("plane-flight-fill", include_str!("../phosphor/plane-flight-fill.svg")),
+    ("takeoff", include_str!("../phosphor/takeoff.svg")), // airplane-takeoff
+    ("landing", include_str!("../phosphor/landing.svg")), // airplane-landing
+    ("takeoff-fill", include_str!("../phosphor/takeoff-fill.svg")),
+    ("landing-fill", include_str!("../phosphor/landing-fill.svg")),
+    // Evan's Rill Air mark (two paths, its own two colours), pre-baked
+    // from the Inkscape source into a plain 64-unit viewBox: the group
+    // transform applied, the tail's jet→tomato gradient taken as tomato.
+    ("rill-air", include_str!("../rill-air.svg")),
+    // Evan's aircraft — top view (nose up), side view (nose right),
+    // climbing, descending — baked from the Inkscape sources by
+    // scripts/bake-icon.py (group transforms applied, normalised into the
+    // 256 box) as ordinary single-colour glyphs.
+    ("plane-top", include_str!("../plane-top.svg")),
+    ("plane-side", include_str!("../plane-side.svg")),
+    ("plane-takeoff", include_str!("../plane-takeoff.svg")),
+    ("plane-landing", include_str!("../plane-landing.svg")),
 ];
 
 /// The width of an SVG's viewBox, for normalizing differently-scaled
@@ -112,16 +181,42 @@ fn viewbox_width(svg: &str) -> f32 {
 }
 
 /// Every `d` attribute in an SVG, in document order.
-fn d_attributes(svg: &str) -> Vec<&str> {
+/// Every `<path>` element's `d`, with the `fill` the element itself
+/// carries (a hex colour → `Some`; `currentColor`, a url, or nothing →
+/// `None`, the caller's colour).
+fn path_elements(svg: &str) -> Vec<(&str, Option<Color>)> {
+    fn attr<'a>(el: &'a str, name: &str) -> Option<&'a str> {
+        let i = el.find(&format!(" {name}=\""))?;
+        let after = &el[i + name.len() + 3..];
+        let end = after.find('"')?;
+        Some(&after[..end])
+    }
     let mut out = Vec::new();
     let mut rest = svg;
-    while let Some(i) = rest.find(" d=\"") {
-        let after = &rest[i + 4..];
-        let Some(end) = after.find('"') else { break };
-        out.push(&after[..end]);
-        rest = &after[end..];
+    while let Some(i) = rest.find("<path") {
+        let el = &rest[i..];
+        let Some(end) = el.find("/>").or_else(|| el.find('>')) else { break };
+        let el = &el[..end];
+        if let Some(d) = attr(el, "d") {
+            out.push((d, attr(el, "fill").and_then(hex_color)));
+        }
+        rest = &rest[i + end..];
     }
     out
+}
+
+/// `#rrggbb` or `#rgb` → a colour; anything else is not a fixed fill.
+fn hex_color(s: &str) -> Option<Color> {
+    let hex = s.strip_prefix('#')?;
+    let v = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    match hex.len() {
+        6 => Some(Color { r: v(0)?, g: v(2)?, b: v(4)?, a: 255 }),
+        3 => {
+            let d = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(|n| n * 17);
+            Some(Color { r: d(0)?, g: d(1)?, b: d(2)?, a: 255 })
+        }
+        _ => None,
+    }
 }
 
 /// Look up an icon by name, flattening it on first use.
@@ -135,17 +230,17 @@ pub fn icon(name: &str) -> Option<&'static Icon> {
                     // Normalize every source into ICON_VIEWBOX space, so an
                     // icon drawn in a 24-unit box sizes like the 256 set.
                     let scale = ICON_VIEWBOX / viewbox_width(svg);
-                    let contours: Vec<Vec<Point>> = d_attributes(svg)
-                        .iter()
-                        .flat_map(|d| flatten(d))
-                        .filter(|ring| ring.len() > 2)
-                        .map(|ring| {
-                            ring.into_iter()
-                                .map(|p| Point::new(p.x * scale, p.y * scale))
-                                .collect()
-                        })
-                        .collect();
-                    (*name, Icon { contours })
+                    let mut contours: Vec<Vec<Point>> = Vec::new();
+                    let mut fills = Vec::new();
+                    for (d, fill) in path_elements(svg) {
+                        for ring in flatten(d).into_iter().filter(|ring| ring.len() > 2) {
+                            contours.push(
+                                ring.into_iter().map(|p| Point::new(p.x * scale, p.y * scale)).collect(),
+                            );
+                            fills.push(fill);
+                        }
+                    }
+                    (*name, Icon { contours, fills })
                 })
                 .collect()
         })
@@ -162,8 +257,8 @@ pub fn names() -> impl Iterator<Item = &'static str> {
 /// Flatten SVG path data into polylines — one per subpath.
 ///
 /// Supports the commands the vendored set uses and the ones adjacent to them:
-/// moves, lines, horizontal/vertical lines, cubic and quadratic curves,
-/// elliptical arcs, and close. Unknown commands end the parse rather than
+/// moves, lines, horizontal/vertical lines, cubic and quadratic curves
+/// (smooth forms included), elliptical arcs, and close. Unknown commands end the parse rather than
 /// guessing, so a bad path draws less instead of drawing nonsense.
 pub fn flatten(d: &str) -> Vec<Vec<Point>> {
     let mut lexer = Lexer { bytes: d.as_bytes(), pos: 0 };
@@ -172,6 +267,9 @@ pub fn flatten(d: &str) -> Vec<Vec<Point>> {
     let mut cursor = Point::new(0.0, 0.0);
     let mut start = cursor;
     let mut command = 0u8;
+    // The last curve's second control point, for the smooth forms `s`/`t`,
+    // which reflect it through the current point. Reset by anything else.
+    let mut last_ctrl: Option<Point> = None;
 
     loop {
         lexer.skip_separators();
@@ -227,7 +325,37 @@ pub fn flatten(d: &str) -> Vec<Vec<Point>> {
                 let c2 = Point::new(rel(x2, cursor.x), rel(y2, cursor.y));
                 let end = Point::new(rel(x, cursor.x), rel(y, cursor.y));
                 cubic(cursor, c1, c2, end, &mut current);
+                last_ctrl = Some(c2);
                 cursor = end;
+                continue;
+            }
+            b's' => {
+                let (Some((x2, y2)), Some((x, y))) = (lexer.pair(), lexer.pair()) else { break };
+                let c1 = last_ctrl
+                    .map(|c| Point::new(2.0 * cursor.x - c.x, 2.0 * cursor.y - c.y))
+                    .unwrap_or(cursor);
+                let c2 = Point::new(rel(x2, cursor.x), rel(y2, cursor.y));
+                let end = Point::new(rel(x, cursor.x), rel(y, cursor.y));
+                cubic(cursor, c1, c2, end, &mut current);
+                last_ctrl = Some(c2);
+                cursor = end;
+                continue;
+            }
+            b't' => {
+                let Some((x, y)) = lexer.pair() else { break };
+                let c = last_ctrl
+                    .map(|c| Point::new(2.0 * cursor.x - c.x, 2.0 * cursor.y - c.y))
+                    .unwrap_or(cursor);
+                let end = Point::new(rel(x, cursor.x), rel(y, cursor.y));
+                let c1 = Point::new(
+                    cursor.x + 2.0 / 3.0 * (c.x - cursor.x),
+                    cursor.y + 2.0 / 3.0 * (c.y - cursor.y),
+                );
+                let c2 = Point::new(end.x + 2.0 / 3.0 * (c.x - end.x), end.y + 2.0 / 3.0 * (c.y - end.y));
+                cubic(cursor, c1, c2, end, &mut current);
+                last_ctrl = Some(c);
+                cursor = end;
+                continue;
             }
             b'q' => {
                 let (Some((x1, y1)), Some((x, y))) = (lexer.pair(), lexer.pair()) else { break };
@@ -244,7 +372,9 @@ pub fn flatten(d: &str) -> Vec<Vec<Point>> {
                     end.y + 2.0 / 3.0 * (c.y - end.y),
                 );
                 cubic(cursor, c1, c2, end, &mut current);
+                last_ctrl = Some(c);
                 cursor = end;
+                continue;
             }
             b'a' => {
                 let (Some(rx), Some(ry), Some(rot), Some(large), Some(sweep), Some((x, y))) = (
@@ -271,6 +401,7 @@ pub fn flatten(d: &str) -> Vec<Vec<Point>> {
             }
             _ => break,
         }
+        last_ctrl = None;
     }
     if current.len() > 1 {
         out.push(current);
@@ -553,5 +684,29 @@ mod logo_tests {
         let (points, contours) = logo.at(0.0, 0.0, 24.0);
         assert!(points.len() > 20, "logo flattened to {} points", points.len());
         assert!(!contours.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod smooth_curves {
+    use super::*;
+
+    /// The aircraft glyphs use `s` (smooth cubic) segments, which the
+    /// flattener used to stop at — the icon came out as a stub. Every
+    /// vendored icon must flatten to rings that stay inside the viewBox.
+    #[test]
+    fn every_icon_flattens_inside_its_viewbox() {
+        for (name, _) in SOURCES {
+            let glyph = icon(name).unwrap_or_else(|| panic!("{name} parses"));
+            assert!(!glyph.contours.is_empty(), "{name} has rings");
+            let points = glyph.contours.iter().flatten().count();
+            assert!(points > 8, "{name} has a shape, not a stub ({points} points)");
+            for p in glyph.contours.iter().flatten() {
+                assert!(
+                    (-2.0..=ICON_VIEWBOX + 2.0).contains(&p.x) && (-2.0..=ICON_VIEWBOX + 2.0).contains(&p.y),
+                    "{name}: point {p:?} escapes the viewBox"
+                );
+            }
+        }
     }
 }

@@ -437,8 +437,15 @@ fn layout_node(
                 // An icon honours a style background like text does — its
                 // bounds are a box a style may paint (chips, trace modes).
                 background(ctx, style, x, frame.y, size, size, out);
-                let (points, contours) = icon.at(x, frame.y, size);
-                out.push(DrawCommand::FillPath { points, contours, color: style.color });
+                // One path per colour layer: a mark with its own colours
+                // paints them; everything else takes the style's.
+                for (fill, points, contours) in icon.layers(x, frame.y, size) {
+                    out.push(DrawCommand::FillPath {
+                        points,
+                        contours,
+                        color: fill.unwrap_or(style.color),
+                    });
+                }
             }
             // An unknown name occupies its space silently rather than
             // collapsing the row it sits in — a missing glyph should not
