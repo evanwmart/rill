@@ -36,7 +36,7 @@ There is **no executable code and no external reference** except asset paths
 | Offset    | Size | Field        | Value                          |
 |-----------|------|--------------|--------------------------------|
 | `[0..3]`  | 4    | magic        | `"RDOC"`                       |
-| `[4]`     | 1    | version      | `0x01`                         |
+| `[4]`     | 1    | version      | `0x08` (tracks `rill_doc::VERSION`; bumped on any layout change) |
 | `[5..7]`  | 3    | reserved     | 0                              |
 | `[8..11]` | 4    | total size   | u32, must equal the file size  |
 | `[12..13]`| 2    | string count | u16                            |
@@ -164,13 +164,13 @@ type 0x8000–0xFFFF   ignorable: unknown → skip this node, render the rest
 |----------|-----------|----------------------------------------------------|
 | `0x0001` | Text      | value_idx u16                                      |
 | `0x0002` | Image     | source_idx u16 (must be a valid resource path)     |
-| `0x0003` | Row       | gap Dim, padding Dim, child_count u16, children u32×n |
+| `0x0003` | Row       | gap Dim, padding Dim, target u16 (`0xFFFF` = none, else a valid path — the container is a link), child_count u16, children u32×n |
 | `0x0004` | Column    | same as Row                                        |
 | `0x0005` | Rectangle | width Dim, height Dim                              |
 | `0x0006` | Spacer    | size Dim                                           |
 | `0x0007` | Link      | label_idx u16, target_idx u16 (valid path)         |
 | `0x0008` | Scroll    | child u32                                          |
-| `0x0009` | Button    | label_idx u16, action_idx u16 (into action table)  |
+| `0x0009` | Button    | label_idx u16, icon_idx u16 (`0xFFFF` = none, else an icon name), action_idx u16 (into action table) |
 | `0x000A` | TextInput | bind u16 (string state), placeholder_idx u16, action u16 (`0xFFFF` = none, else fires on Enter), multiline u8 (0/1) |
 | `0x000B` | When      | state u16 (bool), invert u8 (0/1), child u32       |
 | `0x000C` | Icon      | name_idx u16, size Dim                             |
