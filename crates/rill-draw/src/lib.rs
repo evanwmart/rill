@@ -235,3 +235,81 @@ pub enum DrawCommand {
         on_release: Option<UiAction>,
     },
 }
+
+impl DrawCommand {
+    /// Whether the command puts pixels on screen (as opposed to declaring
+    /// a region, a key, or a clock). Clips count: they shape the paint.
+    pub fn is_paint(&self) -> bool {
+        matches!(
+            self,
+            DrawCommand::Rect { .. }
+                | DrawCommand::Shadow { .. }
+                | DrawCommand::Glow { .. }
+                | DrawCommand::Border { .. }
+                | DrawCommand::Path { .. }
+                | DrawCommand::FillPath { .. }
+                | DrawCommand::Text { .. }
+                | DrawCommand::Image { .. }
+                | DrawCommand::Backdrop { .. }
+                | DrawCommand::PushClip { .. }
+                | DrawCommand::PopClip
+        )
+    }
+
+    /// The area a command paints, when it has one. Regions, keys and
+    /// clocks have none; clips have one but paint nothing themselves.
+    pub fn bounds(&self) -> Option<Rect> {
+        match self {
+            DrawCommand::Rect { rect, .. }
+            | DrawCommand::Shadow { rect, .. }
+            | DrawCommand::Glow { rect, .. }
+            | DrawCommand::Border { rect, .. }
+            | DrawCommand::Text { rect, .. }
+            | DrawCommand::Image { rect, .. }
+            | DrawCommand::Backdrop { rect, .. } => Some(*rect),
+            DrawCommand::Path { points, .. } | DrawCommand::FillPath { points, .. } => {
+                let first = points.first()?;
+                let (mut x0, mut y0, mut x1, mut y1) = (first.x, first.y, first.x, first.y);
+                for p in points {
+                    x0 = x0.min(p.x);
+                    y0 = y0.min(p.y);
+                    x1 = x1.max(p.x);
+                    y1 = y1.max(p.y);
+                }
+                Some(Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+            }
+            _ => None,
+        }
+    }
+
+    /// The same command with its colour's alpha scaled by `k` (0..=1).
+    /// Commands without a colour — images, backdrops, clips, regions —
+    /// are returned unchanged.
+    pub fn faded(self, k: f32) -> DrawCommand {
+        let fade = |c: Color| Color { a: (c.a as f32 * k.clamp(0.0, 1.0)).round() as u8, ..c };
+        match self {
+            DrawCommand::Rect { rect, color, corner_radius } => {
+                DrawCommand::Rect { rect, color: fade(color), corner_radius }
+            }
+            DrawCommand::Shadow { rect, color, blur, spread, corner_radius } => {
+                DrawCommand::Shadow { rect, color: fade(color), blur, spread, corner_radius }
+            }
+            DrawCommand::Glow { rect, color, blur, corner_radius } => {
+                DrawCommand::Glow { rect, color: fade(color), blur, corner_radius }
+            }
+            DrawCommand::Border { rect, color, width, corner_radius } => {
+                DrawCommand::Border { rect, color: fade(color), width, corner_radius }
+            }
+            DrawCommand::Path { points, color, width, closed } => {
+                DrawCommand::Path { points, color: fade(color), width, closed }
+            }
+            DrawCommand::FillPath { points, contours, color } => {
+                DrawCommand::FillPath { points, contours, color: fade(color) }
+            }
+            DrawCommand::Text { rect, text, color, font_size, font_weight, font_family } => {
+                DrawCommand::Text { rect, text, color: fade(color), font_size, font_weight, font_family }
+            }
+            other => other,
+        }
+    }
+}

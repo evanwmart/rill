@@ -304,6 +304,10 @@ fn a_fetch_in_flight_is_pending_but_not_changed() {
     let served = Served::new("pending");
     served.put(CLOCK);
     let mut v = served.view();
+    // An arriving document dissolves in over the old frame, which is
+    // motion and reports as change for the length of the crossfade; this
+    // test is about the fetch, so switch the motion off.
+    v.set_crossfade(false);
 
     // Wait out the clock, then step once: this starts a fetch and cannot
     // possibly have received it in the same call.
@@ -452,4 +456,84 @@ fn the_view_reports_the_documents_tier() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(v.tier(), 2, "the declaration reached the host");
+}
+
+/// A page that re-reads itself fast and paints one big slab.
+fn slab(color: &str, label: &str) -> String {
+    format!(
+        r##"
+style "slab" background="{color}"
+column {{
+    live target="/page" every=20
+    rect style="slab" width=360 height=240
+    text "{label}"
+}}
+"##
+    )
+}
+
+/// Poll until one more document has been applied. Not `changed`: a
+/// transition in flight reports as change on every poll, which is the
+/// point of it and useless as an arrival signal.
+fn wait_for_apply(v: &mut AppView) {
+    let before = v.applied_loads();
+    for _ in 0..400 {
+        v.poll();
+        if v.applied_loads() > before {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the new document never arrived");
+}
+
+/// A reload that changes a run of text fades the old reading out, and
+/// only then fades the new one in: early on, the old run is what is
+/// drawn; past the midpoint, only the new run, still arriving; after the
+/// change, the frame is plain. A shape that changed does the same.
+#[test]
+fn a_changed_run_fades_out_then_in_and_the_frame_settles() {
+    use rill_ui::DrawCommand;
+    let bounds = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+    let served = Served::new("motion");
+    served.put(&slab("#ff0000", "one"));
+    let mut v = served.view();
+    v.set_crossfade(true);
+    wait_for_apply(&mut v);
+    v.layout(bounds, &mut FixedMeasurer);
+
+    let texts = |cmds: &[DrawCommand]| -> Vec<(String, u8)> {
+        cmds.iter()
+            .filter_map(|c| match c {
+                DrawCommand::Text { text, color, .. } => Some((text.clone(), color.a)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    served.put(&slab("#ff0000", "two"));
+    wait_for_apply(&mut v);
+    let (cmds, _, _) = v.layout(bounds, &mut FixedMeasurer);
+    let t = texts(&cmds);
+    assert!(t.iter().any(|(s, _)| s == "one"), "the old reading is still up at the start: {t:?}");
+    assert!(!t.iter().any(|(s, a)| s == "two" && *a > 0), "the new one has not begun: {t:?}");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let (cmds, _, _) = v.layout(bounds, &mut FixedMeasurer);
+    let t = texts(&cmds);
+    assert!(!t.iter().any(|(s, _)| s == "one"), "the old reading is gone past the midpoint: {t:?}");
+    assert!(t.iter().any(|(s, a)| s == "two" && *a > 0 && *a < 255), "the new one is arriving: {t:?}");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let (cmds, _, _) = v.layout(bounds, &mut FixedMeasurer);
+    let t = texts(&cmds);
+    assert_eq!(t, vec![("two".to_string(), 255)], "settled: {t:?}");
+
+    // The slab changes colour: the old one fades out first.
+    served.put(&slab("#0000ff", "two"));
+    wait_for_apply(&mut v);
+    v.layout(bounds, &mut FixedMeasurer);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let (cmds, _, _) = v.layout(bounds, &mut FixedMeasurer);
+    let red_fading = cmds.iter().any(|c| matches!(c, DrawCommand::Rect { color, .. } if color.r == 0xff && color.g == 0 && color.a > 0 && color.a < 255));
+    let blue_waiting = cmds.iter().any(|c| matches!(c, DrawCommand::Rect { color, .. } if color.b == 0xff && color.r == 0 && color.a == 0));
+    assert!(red_fading && blue_waiting, "old shape fading, new one not yet: {cmds:?}");
 }

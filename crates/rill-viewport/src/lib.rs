@@ -19,6 +19,73 @@ pub use theme::DesktopTheme;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+/// How long one change takes: the old reading fades all the way out,
+/// and only when that fade has five percent left does the new reading
+/// begin to fade in. Nothing moves; nothing overlaps for more than a
+/// blink. Changes cascade from the top of the page, each `STAGGER` after
+/// the one above it, so a page that changed in several places settles
+/// in a ripple rather than a snap.
+const FLIP: Duration = Duration::from_millis(1000);
+const STAGGER: Duration = Duration::from_millis(40);
+/// Where in a change the fade-out ends and the fade-in begins.
+const OUT_END: f32 = 0.5;
+const IN_START: f32 = 0.475;
+
+/// Opacity of the reading on its way out, at progress `t` in 0..=1.
+fn out_alpha(t: f32) -> f32 {
+    let u = (t / OUT_END).clamp(0.0, 1.0);
+    1.0 - u * u * (3.0 - 2.0 * u)
+}
+
+/// Opacity of the reading on its way in, at progress `t` in 0..=1.
+fn in_alpha(t: f32) -> f32 {
+    let u = ((t - IN_START) / (1.0 - IN_START)).clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+/// The cascade is capped: a page where everything changed (a navigation)
+/// still settles inside a second and a half.
+const MAX_STAGGERS: u32 = 12;
+
+/// A transition in progress, from the frame that was on screen.
+struct Transition {
+    /// Set at the first frame painted after the document applied — the
+    /// clock starts when the motion can actually be seen.
+    started: Option<Instant>,
+    old: Vec<DrawCommand>,
+}
+
+/// A text run's place: where it is and how big, to the pixel. Two frames'
+/// runs at the same place are the same slot on the board.
+type Place = (i32, i32, i32, i32, i32);
+
+fn place(rect: &Rect, size: f32) -> Place {
+    (rect.x.round() as i32, rect.y.round() as i32, rect.w.round() as i32, rect.h.round() as i32, size.round() as i32)
+}
+
+/// One run changing from `was` to `now` at progress `t` in 0..=1: the old
+/// reading fades out, then the new one fades in. Both are drawn where
+/// they are; the reader sees the old value leave and the new one arrive
+/// in its place.
+fn flip_run(out: &mut Vec<DrawCommand>, was: &DrawCommand, now: &DrawCommand, t: f32) {
+    if t <= 0.0 {
+        out.push(was.clone());
+        return;
+    }
+    if t >= 1.0 {
+        out.push(now.clone());
+        return;
+    }
+    let (o, i) = (out_alpha(t), in_alpha(t));
+    if o > 0.0 {
+        out.push(was.clone().faded(o));
+    }
+    if i > 0.0 {
+        out.push(now.clone().faded(i));
+    }
+}
+
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -744,6 +811,16 @@ pub struct AppView {
     /// tick that never fired or a tick whose commit never happened — two
     /// different bugs that look identical from either side alone.
     applied_loads: u64,
+    /// The last frame this view painted, kept so the next applied document
+    /// can crossfade from it (see `crossfade`).
+    last_frame: Vec<DrawCommand>,
+    /// A transition in progress, from the frame it replaces.
+    transition: Option<Transition>,
+    /// Whether applied documents fade between readings at all. Off by
+    /// default: a change is instant, which on a small GPU is also the
+    /// smoothest thing there is. A host that wants the fades turns them
+    /// on with `set_crossfade(true)`.
+    crossfade: bool,
     /// Hash of the currently shown page, when a remote fetch computed one.
     /// A live tick sends it as GET_IF so an unchanged page costs a hash
     /// comparison on the wire instead of a transfer (the disk cache stays
@@ -866,6 +943,9 @@ impl AppView {
             live_hash: None,
             live_failures: 0,
             applied_loads: 0,
+            last_frame: Vec::new(),
+            transition: None,
+            crossfade: false,
             dirty: HashSet::new(),
             undo: HashMap::new(),
             redo: HashMap::new(),
@@ -990,7 +1070,8 @@ impl AppView {
     /// repaint) and whether work is still outstanding (come back soon, but
     /// do not repaint for it).
     pub fn poll(&mut self) -> Polled {
-        let mut changed = false;
+        // A crossfade is motion: keep the frames coming until it settles.
+        let mut changed = self.transition.is_some();
         let mut still_pending = false;
 
         // A self-reloading page. Only ever one fetch in flight: a slow server
@@ -1324,6 +1405,15 @@ impl AppView {
                 }
                 self.live_failures = 0;
                 self.applied_loads += 1;
+                // A new document arrives as a crossfade from the frame on
+                // screen, so a live tick that changes one number melts
+                // rather than snaps. Nothing to fade from on the first load.
+                if self.crossfade && !self.last_frame.is_empty() {
+                    self.transition = Some(Transition {
+                        started: None,
+                        old: std::mem::take(&mut self.last_frame),
+                    });
+                }
                 self.tree = Some(resolve(&doc, self.theme.clone()));
                 self.doc = Some(doc);
                 self.error = None;
@@ -1694,6 +1784,131 @@ impl AppView {
     /// Lay out for `bounds` (the surface rect in its host's local space) and
     /// return paintable commands + the ready-image provider + whether the
     /// cursor should be a pointer.
+    /// Whether new documents fade between readings or snap (the default).
+    pub fn set_crossfade(&mut self, on: bool) {
+        self.crossfade = on;
+        if !on {
+            self.transition = None;
+        }
+    }
+
+    /// Paint the frame being painted *through* a transition from the one
+    /// it replaces — or as itself, when there is none.
+    ///
+    /// The board's own motion: every text run whose reading changed flips
+    /// down to the new one, split-flap style. The top half of the old
+    /// reading folds away to reveal the new top half, then the new bottom
+    /// half drops over the old. Runs flip in a cascade from the top of
+    /// the page. Shapes that changed crossfade underneath; runs that
+    /// appeared fade in, runs that vanished fade out. Everything that did
+    /// not change is painted once, as it is.
+    ///
+    /// Cost: a handful of clipped draws per changed run for half a
+    /// second, then nothing — no per-node state, no tweening.
+    fn crossfade(&mut self, fresh: Vec<DrawCommand>, _bounds: Rect) -> Vec<DrawCommand> {
+        let Some(tr) = self.transition.as_mut() else { return fresh };
+        let started = *tr.started.get_or_insert_with(Instant::now);
+        let elapsed = started.elapsed().as_secs_f32();
+
+        // The old frame, indexed: text runs by place, shapes by identity.
+        let mut old_text: HashMap<Place, Vec<&DrawCommand>> = HashMap::new();
+        let mut old_shapes: HashSet<String> = HashSet::new();
+        for c in tr.old.iter().filter(|c| c.is_paint()) {
+            match c {
+                DrawCommand::Text { rect, font_size, .. } => {
+                    old_text.entry(place(rect, *font_size)).or_default().push(c)
+                }
+                DrawCommand::PushClip { .. } | DrawCommand::PopClip => {}
+                _ => {
+                    old_shapes.insert(format!("{c:?}"));
+                }
+            }
+        }
+
+        // Runs that changed, top to bottom: their order is their place in
+        // the cascade.
+        let mut flips: Vec<(usize, &DrawCommand)> = Vec::new(); // (index in fresh, old run)
+        let mut unchanged: HashSet<usize> = HashSet::new();
+        for (i, c) in fresh.iter().enumerate() {
+            if let DrawCommand::Text { rect, text, font_size, .. } = c
+                && let Some(runs) = old_text.get_mut(&place(rect, *font_size))
+                && let Some(was) = runs.pop()
+            {
+                match was {
+                    DrawCommand::Text { text: was_text, .. } if was_text != text => flips.push((i, was)),
+                    _ => {
+                        unchanged.insert(i);
+                    }
+                }
+            }
+        }
+        flips.sort_by(|(a, _), (b, _)| {
+            let ra = fresh[*a].bounds().unwrap_or_default();
+            let rb = fresh[*b].bounds().unwrap_or_default();
+            (ra.y, ra.x).partial_cmp(&(rb.y, rb.x)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let stagger = STAGGER.as_secs_f32();
+        let flip = FLIP.as_secs_f32();
+        let total = flip + stagger * (flips.len() as u32).min(MAX_STAGGERS) as f32;
+        let e = (elapsed / total).clamp(0.0, 1.0);
+        if e >= 1.0 {
+            self.transition = None;
+            return fresh;
+        }
+        let slot: HashMap<usize, (usize, &DrawCommand)> =
+            flips.iter().enumerate().map(|(k, (i, was))| (*i, (k, *was))).collect();
+        // The runs of the old frame that no new run took over: they fade.
+        let leftover_text: Vec<&DrawCommand> = old_text.into_values().flatten().collect();
+        let new_shapes: HashSet<String> = fresh
+            .iter()
+            .filter(|c| c.is_paint() && !matches!(c, DrawCommand::Text { .. } | DrawCommand::PushClip { .. } | DrawCommand::PopClip))
+            .map(|c| format!("{c:?}"))
+            .collect();
+
+        let mut out = Vec::with_capacity(fresh.len() + flips.len() * 4);
+        for (i, c) in fresh.into_iter().enumerate() {
+            match &c {
+                DrawCommand::PushClip { .. } | DrawCommand::PopClip => out.push(c),
+                _ if c.is_paint() && !matches!(c, DrawCommand::Text { .. }) => {
+                    // A shape the old frame did not have (a colour that
+                    // changed is a new shape too) fades in like a new run.
+                    if old_shapes.contains(&format!("{c:?}")) {
+                        out.push(c);
+                    } else {
+                        out.push(c.faded(in_alpha(e)));
+                    }
+                }
+                DrawCommand::Text { .. } => {
+                    if let Some((k, was)) = slot.get(&i) {
+                        let k = (*k as u32).min(MAX_STAGGERS) as f32;
+                        let t = ((elapsed - k * stagger) / flip).clamp(0.0, 1.0);
+                        flip_run(&mut out, was, &c, t);
+                    } else if unchanged.contains(&i) {
+                        out.push(c);
+                    } else {
+                        // No predecessor at this place: a new run, arriving
+                        // on the same clock as everything else that is new.
+                        out.push(c.faded(in_alpha(e)));
+                    }
+                }
+                _ => out.push(c),
+            }
+        }
+        // Old shapes that changed or vanished crossfade out on top; old
+        // runs that vanished fade out with them.
+        for c in tr.old.iter().filter(|c| c.is_paint()) {
+            match c {
+                DrawCommand::Text { .. } | DrawCommand::PushClip { .. } | DrawCommand::PopClip => {}
+                _ if !new_shapes.contains(&format!("{c:?}")) => out.push(c.clone().faded(out_alpha(e))),
+                _ => {}
+            }
+        }
+        for c in leftover_text {
+            out.push(c.clone().faded(out_alpha(e)));
+        }
+        out
+    }
+
     pub fn layout(
         &mut self,
         bounds: Rect,
@@ -1706,6 +1921,9 @@ impl AppView {
         let shape = (bounds.w, bounds.h, self.zoom);
         if self.last_shape.is_some_and(|s| s != shape) {
             self.reshaping_since = Some(Instant::now());
+            // The old frame was laid for the old shape; fading it in the
+            // new one would smear. Snap instead.
+            self.transition = None;
         }
         self.last_shape = Some(shape);
         self.viewport = bounds;
@@ -2059,6 +2277,8 @@ impl AppView {
         // band) survived. Menus are already bounded by their own size, so
         // they need no culling to stay cheap.
         cull_offscreen(&mut commands, self.scroll, bounds.h);
+        self.last_frame = commands.clone();
+        let mut commands = self.crossfade(commands, bounds);
 
         // The open context menu paints above everything — the z-axis is
         // command order. Geometry is (re)computed here because this is where
