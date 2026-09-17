@@ -20,5 +20,17 @@ fi
 # The compositor in the FOREGROUND: systemd watches this pid. History on
 # (a kiosk is a system of record); RILL_SHOT_DIR lets SIGUSR2 dump a frame.
 export RILL_SHOT_DIR="$HOME"
+# Kiosk mode (the display profile): if ~/kiosk.url names a page, the glass
+# boots into that one document, full-screen and chromeless, no dock — the
+# kiosk window kind: the compositor sizes it to the output. 1080p, not 4K:
+# signage is read from across a room and the V3D has headroom to spare at
+# that size. Remove the file to get the desktop back.
+if [ -s "$HOME/kiosk.url" ]; then
+  export RILL_DRM_MODE=1920x1080
+  exec "$BIN/rill-compositor" --backend drm \
+      "$BIN/rill-vector" --kiosk "$(cat "$HOME/kiosk.url")" \
+      --data "$D/data" --identity "$D/identity-device" \
+      --cache "$HOME/.cache/rill" --theme "$HOME/.config/rill/theme.toml"
+fi
 exec "$BIN/rill-compositor" --backend drm \
     "$BIN/rill-vector" --dock --data "$D/data" --identity "$D/identity-device"

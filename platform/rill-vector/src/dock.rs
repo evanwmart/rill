@@ -214,6 +214,9 @@ struct WidgetEntry {
 /// The app id the compositor parks on the desktop, below every window. A
 /// widget appends `#<anchor>:<w>x<h>+<x>+<y>` to it.
 pub const WIDGET_APP_ID: &str = "rill-shell-widget";
+/// A kiosk: the display profile. One document owns the whole output —
+/// chromeless, no dock, no cursor. `rill-shell-kiosk#<app url>`.
+pub const KIOSK_APP_ID: &str = "rill-shell-kiosk";
 
 /// The app id the compositor pins to the bottom edge (`reflow_shell`).
 pub const DOCK_APP_ID: &str = "rill-shell-dock";

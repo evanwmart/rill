@@ -139,6 +139,13 @@ const SHELL_DOCK_APP_ID: &str = "rill-shell-dock";
 /// Desktop widgets: parked below every window, never focused, placed by the
 /// anchor in their own app id (`rill-shell-widget#<anchor>:<w>x<h>+<x>+<y>`).
 const SHELL_WIDGET_APP_ID: &str = "rill-shell-widget";
+/// `rill-shell-kiosk#<app url>`: the display profile — one document owns the
+/// whole output. Modelled as a widget placed at the output's full size, so
+/// everything a widget already is (chromeless, parked, theme-placed) comes
+/// for free; while one is mapped the dock strip is gone and the cursor,
+/// the recording badge and the window dress are not drawn: the glass *is*
+/// the page.
+const SHELL_KIOSK_APP_ID: &str = "rill-shell-kiosk";
 /// How far a per-window effect may reach beyond its own window, in logical
 /// pixels. The fx layer for a window is scissored to its rect grown by this,
 /// so the cost stays proportional to the windows on screen rather than to the
@@ -283,6 +290,10 @@ struct DesktopWidget {
     /// identity that survives a restart, so it is what a moved widget writes
     /// its new position against.
     app: String,
+    /// The display profile: this widget is the whole screen (see
+    /// `SHELL_KIOSK_APP_ID`). Its place is re-derived from the output on
+    /// every reflow rather than read from the theme.
+    kiosk: bool,
 }
 
 struct Rill {
@@ -969,6 +980,15 @@ impl Rill {
         self.widgets.iter().any(|w| &w.window == window)
     }
 
+    /// Whether a kiosk (the display profile) currently owns the output.
+    fn kiosk(&self) -> bool {
+        self.widgets.iter().any(|w| w.kiosk)
+    }
+
+    fn is_kiosk_window(&self, window: &Window) -> bool {
+        self.widgets.iter().any(|w| w.kiosk && &w.window == window)
+    }
+
     /// A widget was dropped: remember where, and write it back to the theme.
     ///
     /// Both halves matter. Updating the in-memory placement is what stops
@@ -1044,6 +1064,18 @@ impl Rill {
     /// Put every widget back in its corner — after a resolution change, or
     /// after the dock's height moved the top edge.
     fn replace_widgets(&mut self) {
+        // A kiosk tracks the output, not the theme: re-fit it on every
+        // reflow (a resolution change, a display coming back).
+        let size = self.output_size;
+        for w in &mut self.widgets {
+            if w.kiosk {
+                w.place = WidgetPlace { anchor: Anchor::TopLeft, w: size.w, h: size.h, x: 0, y: 0 };
+                if let Some(t) = w.window.toplevel() {
+                    t.with_pending_state(|s| s.size = Some(size));
+                    t.send_configure();
+                }
+            }
+        }
         let placed: Vec<(Window, Point<i32, Logical>)> = self
             .widgets
             .iter()
@@ -1886,7 +1918,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 say!("boids {}", installed_boids);
                 state.needs_redraw = true;
             }
-            if fx_conf.dock_height != state.dock_height {
+            if fx_conf.dock_height != state.dock_height && !state.kiosk() {
                 // Re-reserve the strip and push every window back inside the
                 // usable area — a dock that grew must not leave a window
                 // sitting under it.
@@ -1902,7 +1934,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 anims_enabled = fx_conf.animations;
                 state.needs_redraw = true;
             }
-            let next_clear = fx_conf.background_color.unwrap_or(CLEAR_DEFAULT);
+            let next_clear = if state.kiosk() {
+                fx_conf.kiosk_floor.or(fx_conf.background_color).unwrap_or(CLEAR_DEFAULT)
+            } else {
+                fx_conf.background_color.unwrap_or(CLEAR_DEFAULT)
+            };
             if next_clear != clear_color {
                 clear_color = next_clear;
                 state.needs_redraw = true;
@@ -1944,7 +1980,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Background (shader wallpaper) slot, same lifecycle as the
             // effect: act only when (path, mtime) changes.
-            let current_bg = fx_conf.background.and_then(stamp);
+            // Behind a kiosk there is nothing to see, and an animated
+            // wallpaper would keep the GPU drawing frames for it anyway.
+            let current_bg = if state.kiosk() { None } else { fx_conf.background.and_then(stamp) };
             if current_bg != installed_bg {
                 match &current_bg {
                     Some((p, _)) => match std::fs::read_to_string(p) {
@@ -2007,7 +2045,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.needs_redraw = true;
             }
             let warp = fx_conf.warp;
-            let current = fx_conf.shader.and_then(stamp);
+            // A kiosk is the page, not a desktop: no grade, no vignette.
+            // The theme's effect comes back when the kiosk unmaps.
+            let current = if state.kiosk() { None } else { fx_conf.shader.and_then(stamp) };
             if current != installed_shader {
                 match &current {
                     Some((p, _)) => match std::fs::read_to_string(p) {
@@ -2050,7 +2090,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The per-window effect, on the same hot-reload contract as the
             // grader above: a rejected shader leaves the previous one
             // installed rather than taking the desktop down.
-            let current_wfx = fx_conf.window_shader.and_then(stamp);
+            let current_wfx =
+                if state.kiosk() { None } else { fx_conf.window_shader.and_then(stamp) };
             if current_wfx != installed_window_shader {
                 match &current_wfx {
                     Some((p, _)) => match std::fs::read_to_string(p) {
@@ -2630,6 +2671,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                 });
             if !is_shell
+                && !state.is_kiosk_window(window)
                 && let Some(rect) = state.window_rect(window)
             {
                 let focused = Some(window) == focused_window.as_ref();
@@ -2810,6 +2852,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
 
+        // The kiosk's watermark: on the floor, under the window, wherever
+        // the page lets the floor show.
+        let mark_cmds = kiosk_mark_commands(&state, theme_desktop_fx_cached().kiosk_mark.as_ref());
         let mut scene: Vec<SceneLayer> = contents
             .iter()
             .enumerate()
@@ -2836,6 +2881,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })
             .collect();
+        if !mark_cmds.is_empty() {
+            scene.insert(0, SceneLayer::commands(&mark_cmds));
+        }
         // Pixel wallpaper: the scene's bottom layer, cover-fitted — scaled
         // by the larger axis ratio and centred, so the image keeps its
         // aspect and the overflow is cropped by the pass rather than the
@@ -2970,7 +3018,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // indicator never lies). Deliberately quiet: a dot and three
         // letters, top-right, under the HUD if both are up.
         let mut badge = Vec::new();
-        if state.history.is_some() {
+        if state.history.is_some() && !state.kiosk() {
             // The indicator (specs/history.md decision 1: it never lies).
             // Not a red dot — red-dot-plus-"rec" reads as a camera pointed
             // at you, and what this marks is the machine keeping its own
@@ -3040,7 +3088,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // The pointer, drawn rather than borrowed: last in the scene, so it
         // sits above every window, the dock, and the stats readout.
-        let cursor_cmds = if cursor_style.draw {
+        let cursor_cmds = if cursor_style.draw && !state.kiosk() {
             let over = state.edge_cursor();
             let icon = over.unwrap_or(match &state.cursor_status {
                 CursorImageStatus::Named(icon) => *icon,
@@ -4779,6 +4827,22 @@ impl XdgShellHandler for Rill {
                 // one per code path.
                 self.space.map_element(window, (0, 0), false);
             }
+            Some(id) if id.starts_with(SHELL_KIOSK_APP_ID) => {
+                // The display profile: the one window is the whole output.
+                // Sized here and on every reflow; the strip is zeroed while
+                // it is up (the theme poll leaves dock_height alone until
+                // the kiosk unmaps, then restores it from the theme).
+                let app = id.split_once('#').map(|(_, a)| a).unwrap_or_default().to_string();
+                let size = self.output_size;
+                say!("kiosk {app:?} owns the output ({}x{})", size.w, size.h);
+                let place = WidgetPlace { anchor: Anchor::TopLeft, w: size.w, h: size.h, x: 0, y: 0 };
+                surface.with_pending_state(|s| s.size = Some(size));
+                surface.send_configure();
+                self.widgets.retain(|w| w.window != window);
+                self.widgets.push(DesktopWidget { window: window.clone(), place, app, kiosk: true });
+                self.dock_height = 0;
+                self.space.map_element(window, (0, 0), false);
+            }
             Some(id) if id.starts_with(SHELL_WIDGET_APP_ID) => {
                 // `rill-shell-widget#<place>[#<app url>]`. A widget with no
                 // placement still gets parked — top-left, at whatever size it
@@ -4805,7 +4869,7 @@ impl XdgShellHandler for Rill {
                 let origin = place.origin(self.output_size, self.dock_height);
                 self.space.map_element(window.clone(), origin, false);
                 self.widgets.retain(|w| w.window != window);
-                self.widgets.push(DesktopWidget { window, place, app });
+                self.widgets.push(DesktopWidget { window, place, app, kiosk: false });
             }
             _ => {}
         }
@@ -5239,6 +5303,28 @@ fn cursor_shape(icon: CursorIcon, at: (f32, f32), style: CursorStyle) -> Vec<Dra
     out
 }
 
+/// The watermark under a kiosk, as paint: the named icon's rings, turned
+/// about their centre and set in the bottom-right corner. Empty when no
+/// kiosk is up or no mark is configured.
+fn kiosk_mark_commands(state: &Rill, mark: Option<&KioskMark>) -> Vec<DrawCommand> {
+    let (Some(mark), true) = (mark, state.kiosk()) else { return Vec::new() };
+    let Some(glyph) = rill_ui::icons::icon(&mark.icon) else { return Vec::new() };
+    let (w, h) = (state.output_size.w as f32, state.output_size.h as f32);
+    let x = w - mark.margin - mark.size;
+    let y = h - mark.margin - mark.size;
+    let (points, contours) = glyph.at(x, y, mark.size);
+    let (cx, cy) = (x + mark.size / 2.0, y + mark.size / 2.0);
+    let (sin, cos) = mark.angle_deg.to_radians().sin_cos();
+    let points = points
+        .into_iter()
+        .map(|p| {
+            let (px, py) = (p.x - cx, p.y - cy);
+            UiPoint::new(cx + px * cos - py * sin, cy + px * sin + py * cos)
+        })
+        .collect();
+    vec![DrawCommand::FillPath { points, contours, color: mark.color }]
+}
+
 /// The compositor-facing `[desktop]` effect config.
 #[derive(Clone)]
 struct DesktopFx {
@@ -5297,6 +5383,26 @@ struct DesktopFx {
     boids: u32,
     glass: bool,
     animations: bool,
+    /// `[desktop.kiosk]`: the mark painted on the floor under a kiosk
+    /// window — a watermark the page shows through wherever it is not
+    /// opaque. The page owns its content; the glass owns its brand.
+    kiosk_mark: Option<KioskMark>,
+    /// `[desktop.kiosk] floor`: the clear colour while a kiosk is up —
+    /// what its page's translucent parts sit on, and what the mark is
+    /// painted onto. A dark mark needs a floor lighter than itself.
+    kiosk_floor: Option<UiColor>,
+}
+
+/// A watermark behind the kiosk: an icon by name, its size, the angle it
+/// leans at, how strong it is, and how far in from the bottom-right
+/// corner (negative bleeds off the edge).
+#[derive(Clone)]
+struct KioskMark {
+    icon: String,
+    size: f32,
+    angle_deg: f32,
+    color: UiColor,
+    margin: f32,
 }
 
 impl Default for DesktopFx {
@@ -5325,6 +5431,8 @@ impl Default for DesktopFx {
             glass: false,
             animations: true,
             shader_params: std::collections::HashMap::new(),
+            kiosk_mark: None,
+            kiosk_floor: None,
         }
     }
 }
@@ -5713,6 +5821,30 @@ fn theme_desktop_fx() -> DesktopFx {
                     .collect()
             })
             .unwrap_or_default(),
+        kiosk_floor: desktop
+            .get("kiosk")
+            .and_then(|v| v.as_table())
+            .and_then(|k| k.get("floor"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_hex_color),
+        kiosk_mark: desktop.get("kiosk").and_then(|v| v.as_table()).and_then(|k| {
+            let num = |name: &str, d: f64| {
+                k.get(name).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(d)
+            };
+            let mut color = k
+                .get("mark_color")
+                .and_then(|v| v.as_str())
+                .and_then(parse_hex_color)
+                .unwrap_or(UiColor { r: 0xF2, g: 0xF4, b: 0xF3, a: 255 });
+            color.a = (num("mark_alpha", 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
+            Some(KioskMark {
+                icon: k.get("mark")?.as_str()?.to_string(),
+                size: num("mark_size", 900.0).clamp(16.0, 4096.0) as f32,
+                angle_deg: num("mark_angle", -18.0) as f32,
+                color,
+                margin: num("mark_margin", -120.0) as f32,
+            })
+        }),
         dock_height: desktop
             .get("dock")
             .and_then(|v| v.as_table())

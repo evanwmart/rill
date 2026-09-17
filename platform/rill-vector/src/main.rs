@@ -338,6 +338,10 @@ struct App {
     /// *text* — a meter in a corner labelling itself is furniture wearing a
     /// name tag.
     widget: bool,
+    /// Kiosk mode (`--kiosk`): the display profile. Chromeless like the
+    /// dock — the compositor gives it the whole output and there is nothing
+    /// to drag or close.
+    kiosk: bool,
     /// The dock's material and shape, cached from the theme. Re-read when
     /// the theme file changes, not per frame: it is a file read.
     dock_style: Option<dock::DockStyle>,
@@ -433,9 +437,10 @@ impl App {
 
     /// How tall this window's titlebar is. A document that supplies its own
     /// chrome is putting controls up there, not just a label. The dock is
-    /// chromeless — the strip *is* the content.
+    /// chromeless — the strip *is* the content — and so is a kiosk: the
+    /// page starts at the top edge of the glass.
     fn bar_h(&self) -> f32 {
-        if self.dock.is_some() {
+        if self.dock.is_some() || self.kiosk {
             return 0.0;
         }
         match self.view.as_ref().is_some_and(|v| v.has_chrome()) {
@@ -642,13 +647,18 @@ impl App {
         // it is a window, one the theme happens to have placed. It also
         // costs nothing to draw: `bar_h` already reserved the strip for
         // every non-dock window, so a chromeless widget was leaving that
-        // space blank rather than saving it.
-        let chromeless = self.dock.is_some();
+        // space blank rather than saving it. A kiosk is the other
+        // chromeless kind: the whole screen is the document.
+        let chromeless = self.dock.is_some() || self.kiosk;
         // The dock says what it is made of; every other window is glass if
         // the desktop is. `none` and `solid` both mean no frost and no body
         // tint — `none` paints nothing at all (its document declares a clear
         // page), `solid` leaves the page colour opaque behind the strip.
+        // A kiosk is neither: no frost, no glass body, no radius — the
+        // page is opaque and edge to edge, and a rounded pane would show
+        // the desktop's corners on a screen that has none.
         let glass = match self.dock_style.map(|s| s.background) {
+            _ if self.kiosk => false,
             Some(dock::DockBackground::Glass) | None => self.glass,
             Some(_) => false,
         };
@@ -657,6 +667,7 @@ impl App {
         // default, because a strip against an edge with rounded ends reads
         // as a mistake rather than a decision.
         let glass_radius = match self.dock_style {
+            _ if self.kiosk => 0.0,
             Some(style) => style.corner,
             None => self.look.radius,
         };
@@ -1104,7 +1115,7 @@ impl App {
     /// Which resize edge (if any) a point in the window falls on. The dock
     /// has none — the compositor pins and sizes the strip.
     fn edge_at(&self, x: f32, y: f32) -> Option<ResizeEdge> {
-        if self.dock.is_some() {
+        if self.dock.is_some() || self.kiosk {
             return None;
         }
         let (w, h) = (self.size.0 as f32, self.size.1 as f32);
@@ -1165,6 +1176,7 @@ fn main() {
     let mut no_cache = false;
     let mut widget_source: Option<String> = None;
     let mut widget_place: Option<String> = None;
+    let mut kiosk = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1180,6 +1192,13 @@ fn main() {
             // desktop: same engine, same documents, no titlebar and no
             // place in the window stack.
             "--widget" => widget_source = args.next(),
+            // A kiosk is a widget that owns the whole output: the display
+            // profile (signage, a museum label). Chromeless like the dock,
+            // sized by the compositor to the screen, never dragged or closed.
+            "--kiosk" => {
+                widget_source = args.next();
+                kiosk = true;
+            }
             // Where it sits, as the compositor will read it back off the
             // app id: `<anchor>:<w>x<h>+<x>+<y>`.
             "--widget-place" => widget_place = args.next(),
@@ -1362,6 +1381,7 @@ fn main() {
     // new position back to, and `app = ` is what identifies that entry. Two
     // widgets can share a size and a corner; they cannot share a URL.
     let app_id = match (want_dock, &widget_place, widget_source.is_some()) {
+        _ if kiosk => format!("{}#{}", dock::KIOSK_APP_ID, widget_source.as_deref().unwrap_or("")),
         (true, ..) => dock::DOCK_APP_ID.to_string(),
         (_, Some(place), _) => match &widget_source {
             Some(src) => format!("{}#{place}#{src}", dock::WIDGET_APP_ID),
@@ -1393,6 +1413,7 @@ fn main() {
         dock_style: dock_obj.as_ref().map(|d| d.style()),
         dock: dock_obj,
         widget: widget_source.is_some() || widget_place.is_some(),
+        kiosk,
         replay,
         view_pending: false,
         data_dir,
@@ -1443,7 +1464,7 @@ fn main() {
     };
     // The dock takes whatever strip the compositor configures; a min size
     // would fight the pin.
-    if app.dock.is_none() {
+    if app.dock.is_none() && !app.kiosk {
         app.window.set_min_size(Some((240, 160)));
     }
     app.load_page(0);
@@ -1775,7 +1796,7 @@ impl PointerHandler for App {
                     const BTN_RIGHT: u32 = 0x111;
                     // The dock is chromeless and its menu escapes upward:
                     // every coordinate, negative y included, is document.
-                    let chromeless = self.dock.is_some();
+                    let chromeless = self.dock.is_some() || self.kiosk;
                     if button == BTN_RIGHT {
                         if (chromeless || y >= bar) && let Some(view) = &mut self.view {
                             view.context_click(x, y - bar);
