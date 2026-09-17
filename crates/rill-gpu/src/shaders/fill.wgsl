@@ -1,8 +1,9 @@
-// Filled closed contours, even-odd, with analytic anti-aliasing: one
-// instance per fill covering its bounding box; the fragment stage ray-casts
-// against the fill's flattened segments (a slice of the frame's shared
-// segment buffer) for parity, and takes the distance to the nearest edge
-// for coverage. Icons are a few hundred segments over a few hundred pixels
+// Filled closed contours, nonzero winding, with analytic anti-aliasing:
+// one instance per fill covering its bounding box; the fragment stage
+// ray-casts against the fill's flattened segments (a slice of the frame's
+// shared segment buffer) summing signed crossings — SVG's default rule, so
+// a mark whose parts overlap stays solid and a hole is a reversed ring —
+// and takes the distance to the nearest edge for coverage. Icons are a few hundred segments over a few hundred pixels
 // — the loop is small where the box is small.
 @group(0) @binding(0) var<uniform> viewport: vec2<f32>;
 @group(1) @binding(0) var<storage, read> segments: array<vec4<f32>>;
@@ -68,7 +69,7 @@ fn sd_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    var inside = false;
+    var winding = 0;
     var d = 1e9;
     for (var i = 0u; i < in.seg_count; i = i + 1u) {
         let s = segments[in.seg_start + i];
@@ -77,12 +78,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if ((a.y > in.px.y) != (b.y > in.px.y)) {
             let t = (in.px.y - a.y) / (b.y - a.y);
             if (in.px.x < a.x + t * (b.x - a.x)) {
-                inside = !inside;
+                winding = winding + select(-1, 1, b.y > a.y);
             }
         }
         d = min(d, sd_segment(in.px, a, b));
     }
-    // d is the unsigned distance to the nearest edge; parity signs it.
+    // d is the unsigned distance to the nearest edge; the winding signs it.
+    let inside = winding != 0;
     let coverage = clamp(select(0.5 - d, 0.5 + d, inside), 0.0, 1.0);
     return vec4<f32>(in.color.rgb, in.color.a * coverage * mask_coverage(in.clip.xy));
 }
