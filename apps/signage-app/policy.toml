@@ -1,0 +1,29 @@
+# The signage server's access policy (specs/security.md §4). Signage is
+# public by nature: every document here is meant for whoever is standing
+# in front of the glass, so the three pages and the imagery under /public
+# are open to the Anonymous identity. Nothing else on the server is.
+#
+# Install: copy next to the server's cert and key in its identity dir
+# (`rill auth init-server <dir> --name signage`, then this file as
+# <dir>/policy.toml).
+default_access = "deny"
+
+[[rule]]
+path = "/gate/**"
+allow = ["anonymous"]
+
+[[rule]]
+path = "/airport/**"
+allow = ["anonymous"]
+
+[[rule]]
+path = "/ad/**"
+allow = ["anonymous"]
+
+[[rule]]
+path = "/museum/**"
+allow = ["anonymous"]
+
+[[rule]]
+path = "/public/**"
+allow = ["anonymous"]

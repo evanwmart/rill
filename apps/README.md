@@ -10,6 +10,7 @@ that host and render them live in `platform/`. Rough maturity split:
 | studio-app | Theme Studio — ricing, widgets, showroom | product |
 | music-app | local music player (server-side playback) | product |
 | meter-app | system-metrics widget | product |
+| signage-app | the display profile: airport board, store-window ad, museum label (one server, three documents) | demo |
 | notes-app | minimal CRUD notes — **the tutorial app**: read this first | example |
 | ascii-app | animated ASCII-art widget | example |
 | showcase/ | KDL sources for the showcase pack (aurora, brandbook, console, glass) | demo content |

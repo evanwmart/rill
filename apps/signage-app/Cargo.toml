@@ -1,0 +1,19 @@
+[package]
+name = "signage-app"
+description = "Example Rill display server: an airport departures board, a store-window ad, a museum exhibit label."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-doc = { path = "../../crates/rill-doc" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-server = { path = "../../platform/rill-server" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# localtime_r: the board shows the building's clock.
+libc.workspace = true
+
+[lints]
+workspace = true

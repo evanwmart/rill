@@ -30,6 +30,7 @@ members = [
     "apps/meter-app",
     "apps/ascii-app",
     "apps/music-app",
+    "apps/signage-app",
 ]
 exclude = ["fuzz"]
 

@@ -2976,6 +2976,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "signage-app"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rill-appkit",
+ "rill-auth",
+ "rill-doc",
+ "rill-protocol",
+ "rill-server",
+ "tokio",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
