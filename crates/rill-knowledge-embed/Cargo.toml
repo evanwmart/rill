@@ -1,0 +1,19 @@
+[package]
+name = "rill-knowledge-embed"
+description = "The query and document embedder for knowledge packs: bge-small on burn, wgpu or CPU, behind one trait."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-store = { path = "../rill-store" }
+# Pinned to 0.20: its CubeCL backend pins wgpu ^26, the same wgpu Rill
+# locks. burn 0.21 moved to wgpu 29 — bump this only when Rill bumps wgpu
+# (specs/knowledge.md §1.6). Heavy to compile; nothing but this crate and
+# the two binaries that embed link it.
+burn = { version = "=0.20.1", default-features = false, features = ["std", "wgpu", "ndarray"] }
+burn-store = { version = "=0.20.1", default-features = false, features = ["std", "safetensors"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+
+[lints]
+workspace = true
