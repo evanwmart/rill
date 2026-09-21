@@ -11,6 +11,8 @@ rill-protocol = { path = "../../crates/rill-protocol" }
 rill-auth = { path = "../../crates/rill-auth" }
 rill-appkit = { path = "../../crates/rill-appkit" }
 rill-knowledge = { path = "../../crates/rill-knowledge" }
+# The query embedder: the server carries the model (specs/knowledge.md §1.1).
+rill-knowledge-embed = { path = "../../crates/rill-knowledge-embed" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

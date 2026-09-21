@@ -6,12 +6,17 @@
 //! files (`manifest`, `text/…`, `doc/…`, indexes) under `/knowledge/` too,
 //! so the tree a query reads is the tree a client can fetch.
 //!
-//! `knowledge-app <pack-dir> --identity <dir> [--bind ADDR] [--port N]`
+//! `knowledge-app <pack-dir> --identity <dir> [--model <dir> [--embed gpu|cpu]] [--bind ADDR] [--port N]`
+//!
+//! With `--model`, queries are embedded and the semantic run joins the
+//! fusion; the model's hash must match the pack's manifest or the app
+//! says so and answers lexically.
 
 use std::sync::Arc;
 
 use rill_appkit::{Metrics, Shell, kdl_escape, shell};
-use rill_knowledge::query::{Engine, Hit, Results};
+use rill_knowledge::query::{Engine, Hit, Mode, Results};
+use rill_knowledge_embed::{Embedder, QUERY_PREFIX};
 use rill_knowledge::text::Chunk;
 use rill_protocol::{ActionValue, Status};
 use rill_auth::Identity;
@@ -27,6 +32,18 @@ const MAX_QUERY_BYTES: usize = 512;
 struct KnowledgeApp {
     engine: Engine,
     pack_dir: std::path::PathBuf,
+    embedder: Option<Box<dyn Embedder>>,
+}
+
+impl KnowledgeApp {
+
+    fn semantic_status(&self) -> String {
+        match (self.engine.semantic_available(), &self.embedder) {
+            (true, Some(_)) => "on".into(),
+            (true, None) => "unavailable (no query embedder loaded)".into(),
+            (false, _) => "unavailable (no vectors in this pack)".into(),
+        }
+    }
 }
 
 impl KnowledgeApp {
@@ -66,7 +83,7 @@ impl KnowledgeApp {
                 m.get("source.wiki").unwrap_or("?"),
                 m.get("stage").unwrap_or("?"),
                 if self.engine.lexical_available() { "on" } else { "off (no postings)" },
-                if self.engine.semantic_available() { "on" } else { "unavailable (no vectors in this pack)" }
+                self.semantic_status()
             ))
         ));
         body.push_str("\t\t\t\ttext \"Type in the field above and press Enter. A result opens the chunk; every result page is also a link.\" style=\"muted\"\n");
@@ -82,7 +99,9 @@ impl KnowledgeApp {
         if query.len() > MAX_QUERY_BYTES || query.chars().any(char::is_control) {
             return Err(Status::NotFound);
         }
-        let res = self.engine.search(query, RESULTS).map_err(|_| Status::Internal)?;
+        let qvec = self.embedder.as_ref().filter(|_| self.engine.semantic_available()).map(|e| e.embed(&[&format!("{QUERY_PREFIX}{query}")]).remove(0));
+        let mode = if qvec.is_some() { Mode::Fused } else { Mode::Lexical };
+        let res = self.engine.search_with(query, RESULTS, qvec.as_deref(), mode).map_err(|_| Status::Internal)?;
         let mut body = String::new();
         body.push_str("\t\t\tcolumn gap=10 padding=8 {\n");
         body.push_str(&format!(
@@ -112,6 +131,9 @@ impl KnowledgeApp {
         }
         if let Some(r) = h.entity_rank {
             why.push(format!("entity #{r}"));
+        }
+        if let (Some(r), Some(cos)) = (h.semantic_rank, h.cosine) {
+            why.push(format!("semantic #{r} (cos {cos:.3})"));
         }
         if h.title_match {
             why.push("title".into());
@@ -191,6 +213,8 @@ fn summary(res: &Results, query: &str) -> String {
     }
     if !res.semantic_available {
         s.push_str(" · lexical only");
+    } else {
+        s.push_str(&format!(" · fused lexical + semantic ({} vector candidates)", res.semantic_candidates));
     }
     s
 }
@@ -245,6 +269,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut pack_dir: Option<String> = None;
     let mut identity: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut embed_backend = "cpu".to_string();
     let mut bind = "127.0.0.1".to_string();
     let mut port: u16 = 7450;
     let mut i = 0;
@@ -252,6 +278,14 @@ fn main() {
         match args[i].as_str() {
             "--identity" => {
                 identity = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--model" => {
+                model = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--embed" => {
+                embed_backend = args.get(i + 1).cloned().unwrap_or(embed_backend);
                 i += 2;
             }
             "--bind" => {
@@ -273,13 +307,35 @@ fn main() {
         }
     }
     let (Some(pack_dir), Some(identity)) = (pack_dir, identity) else {
-        eprintln!("usage: knowledge-app <pack-dir> --identity <dir> [--bind ADDR] [--port N]");
+        eprintln!("usage: knowledge-app <pack-dir> --identity <dir> [--model <dir> [--embed gpu|cpu]] [--bind ADDR] [--port N]");
         std::process::exit(2);
     };
     let pack_dir = std::path::PathBuf::from(pack_dir);
     let engine = Engine::open(pack_dir.join("knowledge")).unwrap_or_else(|e| {
         eprintln!("knowledge-app: opening pack {}: {e}", pack_dir.display());
         std::process::exit(1)
+    });
+    let embedder: Option<Box<dyn Embedder>> = model.and_then(|dir| {
+        let t = std::time::Instant::now();
+        match rill_knowledge_embed::open(std::path::Path::new(&dir), &embed_backend) {
+            Ok(e) => {
+                let want = engine.pack().manifest().get("embedding.model_hash").unwrap_or("");
+                if !engine.semantic_available() {
+                    eprintln!("knowledge-app: model loaded but the pack has no vectors; answering lexically");
+                    None
+                } else if e.model_hash().to_string() != want {
+                    eprintln!("knowledge-app: model {} does not match the pack's {want}; answering lexically", e.model_hash());
+                    None
+                } else {
+                    eprintln!("knowledge-app: query embedder {} on {embed_backend} in {:?}", e.model_name(), t.elapsed());
+                    Some(e)
+                }
+            }
+            Err(err) => {
+                eprintln!("knowledge-app: model {dir}: {err}; answering lexically");
+                None
+            }
+        }
     });
     eprintln!(
         "knowledge-app: pack {} — {} chunks, {} documents, stage {}, lexical {}, semantic {}",
@@ -288,13 +344,13 @@ fn main() {
         engine.pack().doc_count(),
         engine.pack().manifest().get("stage").unwrap_or("?"),
         engine.lexical_available(),
-        engine.semantic_available()
+        embedder.is_some() && engine.semantic_available()
     );
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("runtime");
     runtime.block_on(async move {
         let cfg = ServerConfig::new(pack_dir.clone(), std::path::PathBuf::from(identity));
         let mut server = Server::bind(&bind, port, cfg).await.expect("bind");
-        server.dynamic("/knowledge", Arc::new(KnowledgeApp { engine, pack_dir }));
+        server.dynamic("/knowledge", Arc::new(KnowledgeApp { engine, pack_dir, embedder }));
         server.run().await.expect("run");
     });
 }
