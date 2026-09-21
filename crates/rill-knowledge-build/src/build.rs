@@ -29,13 +29,20 @@ fn hash_file(path: &Path) -> std::io::Result<Hash> {
 
 pub fn run(args: &[String]) {
     let Some(stage) = args.first().map(String::as_str) else {
-        eprintln!("usage: rill-knowledge-build build text <zim> <cirrus-dump> <out-dir> [--fraction 1/3] [--limit N]");
+        eprintln!("usage: rill-knowledge-build build text <zim> <cirrus-dump> <out-dir> [--fraction 1/3] [--limit N]\n       rill-knowledge-build build lexical <pack-dir>");
         std::process::exit(2);
     };
     match stage {
         "text" => text_stage(&args[1..]),
+        "lexical" => match args.get(1) {
+            Some(dir) => crate::lexical::run(Path::new(dir)),
+            None => {
+                eprintln!("usage: rill-knowledge-build build lexical <pack-dir>");
+                std::process::exit(2);
+            }
+        },
         other => {
-            eprintln!("unknown build stage {other:?} (stages: text)");
+            eprintln!("unknown build stage {other:?} (stages: text, lexical)");
             std::process::exit(2);
         }
     }

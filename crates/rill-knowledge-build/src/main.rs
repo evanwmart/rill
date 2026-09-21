@@ -9,6 +9,7 @@ mod cirrus;
 mod html;
 mod ingest;
 mod inspect;
+mod lexical;
 mod source;
 mod zim;
 
