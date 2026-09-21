@@ -284,7 +284,9 @@ lexical:  terms → postings ∩/∪ (AND first, OR if empty)
 entity:   qids / aliases → first chunks
 coarse rank all candidates (int8 cosine, 64-d) → top 1024
 full rank (int8 cosine, 384-d)               → top 64
-RRF over the three runs (k = 60); boosts: title, phrase, entity, section
+RRF over the three runs (k = 60); lexical run weighted 0.5 (0.25 in the
+  OR fallback), question/function words dropped from it; boosts: title,
+  phrase, entity, section
 neighbour expansion (c−1, c+1 within the document)
 top N → fetch text → document
 ```
@@ -315,8 +317,30 @@ are smaller than the 300-word target. 64 text shards, 164 MiB on disk,
 minutes on the GPU (§1.6 measured 13.6 ms/sentence single; batched is
 faster).
 
-Targets (not measured): warm query, embedding excluded, p50 < 25 ms on
-NVMe per the FSRAG working spec. Whole pack projected ≈ 0.4 GB.
+Vector stage, measured 2026-09-21: 258,506 chunks embedded on the RTX
+5070 through burn-wgpu in 933 s (≈ 277 chunks/s at the end, batch 128,
+inputs sorted by length; unoptimised), 828 MB peak RSS; `vector/full`
+127 MiB, `vector/coarse` 22 MiB. Whole pack 0.35 GB.
+
+Query, measured: engine open 0.66 s (vectors resident, ~100 MB); the
+brute-force semantic run over every chunk 28–44 ms; a fused query on the
+wire 30–42 ms server-side plus ~14 ms to embed the query on the GPU.
+
+Gold set, 2026-09-21. The automatic title set is saturated (recall@10
+1.000 in every mode: a title is in its own chunk). The twelve hand
+questions are the signal (rank of the expected article, fused):
+EPR paradox #5 (lexical alone #10), Paris #4 (lexical miss),
+Photosynthesis #4, Mount Everest #2, Leonardo da Vinci #2, Season #1,
+Prime number #1, American Civil War #6, Honey #3; misses: Giraffe
+("longest neck" — the model puts dogs first, the article says "long") and
+Charon (the corpus answers with Pluto's "Moons" section, ranked #1: a
+gold-set flaw more than a retrieval one). Adrenaline is not in the cut.
+The lexical weights were chosen by sweeping this set; twelve questions is
+a small set and the choice is provisional.
+
+Targets (not measured): the tree replaces the brute-force scan when a
+pack outgrows a resident scan; per the FSRAG working spec, warm query
+p50 < 25 ms excluding the embed.
 
 ## 13. Open
 

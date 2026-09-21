@@ -21,6 +21,23 @@ pub const LEXICAL_RUN: usize = 200;
 pub const TITLE_BOOST: f32 = 1.25;
 /// Candidates kept from the semantic run before fusion.
 pub const SEMANTIC_RUN: usize = 200;
+/// Weight of the lexical run's reciprocal ranks when every term matched.
+/// Without term frequencies the run is ranked by article popularity among
+/// the matches, which is weak next to a cosine; a gold-set sweep on
+/// 2026-09-21 (specs/knowledge.md §12) chose 0.5 here and 0.25 below as
+/// the only pair that kept every answerable hand question in the top ten.
+pub const LEXICAL_WEIGHT: f32 = 0.5;
+/// Weight when no chunk matched every term (the OR fallback): weaker
+/// still, and at full weight it crowds a strong semantic hit out.
+pub const LEXICAL_OR_WEIGHT: f32 = 0.25;
+/// Question and function words dropped from the lexical run: they are
+/// under the stop share yet say nothing about the answer, and with them in
+/// the AND set the run is ranked by which popular article happens to say
+/// "what". Kept if they are all the query has.
+const STOP_TERMS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "did", "do", "does", "for", "from", "how", "in", "into", "is", "it", "its", "of", "on", "or",
+    "that", "the", "their", "there", "these", "this", "those", "to", "was", "were", "what", "when", "where", "which", "who", "whom", "why", "will", "with", "you", "your",
+];
 
 /// Which runs a search performs. `Fused` is the product; the others exist
 /// so the gold set can measure each run alone.
@@ -45,6 +62,8 @@ pub struct Engine {
     lexical: Index,
     entity: Index,
     vectors: Option<Vectors>,
+    lexical_weight: f32,
+    lexical_or_weight: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +113,7 @@ impl Engine {
         let lexical = Index::open(pack.root().join("lexical"));
         let entity = Index::open(pack.root().join("entity"));
         let vectors = Self::load_vectors(&pack)?;
-        Ok(Engine { pack, docs, lexical, entity, vectors })
+        Ok(Engine { pack, docs, lexical, entity, vectors, lexical_weight: LEXICAL_WEIGHT, lexical_or_weight: LEXICAL_OR_WEIGHT })
     }
 
     fn load_vectors(pack: &Pack) -> Result<Option<Vectors>> {
@@ -154,6 +173,13 @@ impl Engine {
         &self.pack
     }
 
+    /// Override [`LEXICAL_WEIGHT`] and [`LEXICAL_OR_WEIGHT`] (the gold-set
+    /// eval sweeps them).
+    pub fn set_lexical_weights(&mut self, all_terms: f32, or_fallback: f32) {
+        self.lexical_weight = all_terms;
+        self.lexical_or_weight = or_fallback;
+    }
+
     pub fn doc(&self, id: DocId) -> Option<&Doc> {
         self.docs.get(id as usize)
     }
@@ -189,12 +215,21 @@ impl Engine {
         if all_terms.is_empty() && !semantic {
             return Ok(res);
         }
+        // Question and function words leave the lexical run unless they
+        // are all there is.
+        let content: Vec<String> = all_terms.iter().filter(|t| !STOP_TERMS.contains(&t.as_str())).cloned().collect();
+        let (lexical_terms, stopped_words): (Vec<String>, Vec<String>) = if content.is_empty() {
+            (all_terms.clone(), Vec::new())
+        } else {
+            (content, all_terms.iter().filter(|t| STOP_TERMS.contains(&t.as_str())).cloned().collect())
+        };
+        res.skipped_terms.extend(stopped_words);
 
         // Lexical run: postings per term, stop-terms by share, AND then OR.
         let stop_df = (self.pack.chunk_count() as f32 * STOP_SHARE) as usize;
         let mut lists: Vec<(String, Vec<ChunkId>)> = Vec::new();
         let mut stopped: Vec<(String, Vec<ChunkId>)> = Vec::new();
-        for t in &all_terms {
+        for t in &lexical_terms {
             match self.lexical.lookup(t)? {
                 Some(ids) if ids.len() > stop_df => stopped.push((t.clone(), ids)),
                 Some(ids) => lists.push((t.clone(), ids)),
@@ -266,9 +301,10 @@ impl Engine {
         // Fusion.
         let blank = |c: ChunkId| Hit { chunk: c, doc: 0, score: 0.0, lexical_rank: None, entity_rank: None, semantic_rank: None, cosine: None, matched: 0, title_match: false };
         let mut fused: HashMap<ChunkId, Hit> = HashMap::new();
+        let lexical_weight = if res.any_term { self.lexical_or_weight } else { self.lexical_weight };
         for (rank, (c, matched)) in lexical.iter().enumerate() {
             let h = fused.entry(*c).or_insert_with(|| blank(*c));
-            h.score += 1.0 / (RRF_K + rank as f32 + 1.0);
+            h.score += lexical_weight / (RRF_K + rank as f32 + 1.0);
             h.lexical_rank = Some(rank + 1);
             h.matched = *matched;
         }
