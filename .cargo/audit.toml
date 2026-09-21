@@ -40,4 +40,13 @@ ignore = [
     # (it arrived via exr → pulp). It remains in Cargo.lock only for macOS,
     # reached through `metal`, because the lock covers every target.
     "RUSTSEC-2024-0436", # paste unmaintained
+
+    # --- the embedder stack (knowledge-app, rill-knowledge-build only) ---
+    # burn-core 0.20.1 serialises its records with bincode 2, and burn is
+    # pinned at 0.20 because that is the release whose CubeCL backend shares
+    # Rill's wgpu 26 (specs/knowledge.md §1.6). The record path is never
+    # used here (weights load through burn-store's safetensors reader), and
+    # the crate never reaches the appliance or the viewer. Clears when burn
+    # moves off bincode or Rill's wgpu lets burn move.
+    "RUSTSEC-2025-0141", # bincode 2 unmaintained — via burn-core 0.20
 ]

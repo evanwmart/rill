@@ -122,6 +122,7 @@ unmaintained    rustls-pemfile   2.2.0     RUSTSEC-2025-0134   rill-auth (DIRECT
 unmaintained    rustybuzz        0.14.1    RUSTSEC-2026-0206   cosmic-text 0.14
 unmaintained    ttf-parser       0.20.0    RUSTSEC-2026-0192   cosmic-text → fontdb
 unmaintained    ttf-parser       0.21.1    RUSTSEC-2026-0192   cosmic-text 0.14
+unmaintained    bincode          2.0.1     RUSTSEC-2025-0141   burn-core 0.20 (embedder stack only)
 ```
 
 `cgmath`'s unsoundness (RUSTSEC-2026-0197) is **not reachable in this
