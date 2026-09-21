@@ -22,6 +22,7 @@ fn main() {
         Some("build") => build::run(&args[1..]),
         Some("inspect") => inspect::run(&args[1..]),
         Some("eval") => eval::run(&args[1..]),
+        Some("query") => eval::query(&args[1..]),
         _ => {
             eprintln!("usage: rill-knowledge-build <command> …");
             std::process::exit(2);

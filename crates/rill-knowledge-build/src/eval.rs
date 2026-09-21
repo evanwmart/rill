@@ -31,6 +31,8 @@ pub fn run(args: &[String]) {
     let mut model: Option<String> = None;
     let mut backend = "gpu".to_string();
     let mut sample = 500usize;
+    let mut or_weight: Option<f32> = None;
+    let mut lex_weight: Option<f32> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -42,8 +44,16 @@ pub fn run(args: &[String]) {
                 backend = args.get(i + 1).cloned().unwrap_or(backend);
                 i += 2;
             }
+            "--lex-weight" => {
+                lex_weight = args.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
             "--sample" => {
                 sample = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(sample);
+                i += 2;
+            }
+            "--or-weight" => {
+                or_weight = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
             other if pack_dir.is_none() => {
@@ -57,15 +67,20 @@ pub fn run(args: &[String]) {
         }
     }
     let Some(pack_dir) = pack_dir else {
-        eprintln!("usage: rill-knowledge-build eval <pack-dir> [--model <dir>] [--backend gpu|cpu] [--sample N]");
+        eprintln!("usage: rill-knowledge-build eval <pack-dir> [--model <dir>] [--backend gpu|cpu] [--sample N] [--or-weight W] [--lex-weight W]");
         std::process::exit(2);
     };
     let root = Path::new(&pack_dir).join("knowledge");
     let t0 = Instant::now();
-    let engine = Engine::open(&root).unwrap_or_else(|e| {
+    let mut engine = Engine::open(&root).unwrap_or_else(|e| {
         eprintln!("opening {}: {e}", root.display());
         std::process::exit(1)
     });
+    if or_weight.is_some() || lex_weight.is_some() {
+        let (lw, ow) = (lex_weight.unwrap_or(rill_knowledge::query::LEXICAL_WEIGHT), or_weight.unwrap_or(rill_knowledge::query::LEXICAL_OR_WEIGHT));
+        engine.set_lexical_weights(lw, ow);
+        println!("lexical weights: all-terms {lw}, OR fallback {ow}");
+    }
     println!("engine open in {:?}: {} chunks, vectors {}", t0.elapsed(), engine.pack().chunk_count(), engine.semantic_available());
     let embedder: Option<Box<dyn Embedder>> = model.map(|m| {
         rill_knowledge_embed::open(Path::new(&m), &backend).unwrap_or_else(|e| {
@@ -140,4 +155,116 @@ fn rank_of(engine: &Engine, embedder: Option<&dyn Embedder>, mode: Mode, query: 
 
 fn find_title(engine: &Engine, title: &str) -> Option<u32> {
     (0..engine.pack().doc_count() as u32).find(|&i| engine.doc(i).is_some_and(|d| d.title == title))
+}
+
+
+/// `query <pack-dir> "<text>" [--model <dir>] [--backend gpu|cpu] [--mode lexical|semantic|fused] [--or-weight W]`:
+/// one search, every hit with its per-run ranks — the explain view on the
+/// command line.
+pub fn query(args: &[String]) {
+    let mut pack_dir: Option<String> = None;
+    let mut text: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut backend = "gpu".to_string();
+    let mut mode = Mode::Fused;
+    let mut or_weight: Option<f32> = None;
+    let mut lex_weight: Option<f32> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--model" => {
+                model = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--backend" => {
+                backend = args.get(i + 1).cloned().unwrap_or(backend);
+                i += 2;
+            }
+            "--lex-weight" => {
+                lex_weight = args.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "--mode" => {
+                mode = match args.get(i + 1).map(String::as_str) {
+                    Some("lexical") => Mode::Lexical,
+                    Some("semantic") => Mode::Semantic,
+                    _ => Mode::Fused,
+                };
+                i += 2;
+            }
+            "--or-weight" => {
+                or_weight = args.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            other if pack_dir.is_none() => {
+                pack_dir = Some(other.to_string());
+                i += 1;
+            }
+            other if text.is_none() => {
+                text = Some(other.to_string());
+                i += 1;
+            }
+            other => {
+                eprintln!("query: unexpected argument {other}");
+                std::process::exit(2);
+            }
+        }
+    }
+    let (Some(pack_dir), Some(text)) = (pack_dir, text) else {
+        eprintln!("usage: rill-knowledge-build query <pack-dir> \"<text>\" [--model <dir>] [--backend gpu|cpu] [--mode lexical|semantic|fused] [--or-weight W]");
+        std::process::exit(2);
+    };
+    let root = Path::new(&pack_dir).join("knowledge");
+    let mut engine = Engine::open(&root).unwrap_or_else(|e| {
+        eprintln!("opening {}: {e}", root.display());
+        std::process::exit(1)
+    });
+    if or_weight.is_some() || lex_weight.is_some() {
+        engine.set_lexical_weights(lex_weight.unwrap_or(rill_knowledge::query::LEXICAL_WEIGHT), or_weight.unwrap_or(rill_knowledge::query::LEXICAL_OR_WEIGHT));
+    }
+    let embedder: Option<Box<dyn Embedder>> = model.map(|m| {
+        rill_knowledge_embed::open(Path::new(&m), &backend).unwrap_or_else(|e| {
+            eprintln!("opening model {m}: {e}");
+            std::process::exit(1)
+        })
+    });
+    let qvec = match (mode, &embedder) {
+        (Mode::Lexical, _) | (_, None) => None,
+        (_, Some(e)) => Some(e.embed(&[&format!("{QUERY_PREFIX}{text}")]).remove(0)),
+    };
+    let res = engine.search_with(&text, 10, qvec.as_deref(), mode).unwrap_or_else(|e| {
+        eprintln!("search: {e}");
+        std::process::exit(1)
+    });
+    println!(
+        "{:?} {:?}: {} hits in {:.1} ms; terms {:?} skipped {:?}; candidates lexical {} entity {} semantic {}{}",
+        mode,
+        text,
+        res.hits.len(),
+        res.elapsed_ms,
+        res.terms,
+        res.skipped_terms,
+        res.lexical_candidates,
+        res.entity_candidates,
+        res.semantic_candidates,
+        if res.any_term { " (OR fallback)" } else { "" }
+    );
+    for (i, h) in res.hits.iter().enumerate() {
+        let title = engine.doc(h.doc).map(|d| d.title.clone()).unwrap_or_default();
+        let section = engine.chunk(h.chunk).map(|c| c.section).unwrap_or_default();
+        println!(
+            "  {:>2}. {:.4}  {}{}   lex {} ({}/{})  ent {}  sem {}{}{}",
+            i + 1,
+            h.score,
+            title,
+            if section.is_empty() { String::new() } else { format!(" — {section}") },
+            h.lexical_rank.map_or("-".into(), |r| format!("#{r}")),
+            h.matched,
+            res.terms.len(),
+            h.entity_rank.map_or("-".into(), |r| format!("#{r}")),
+            h.semantic_rank.map_or("-".into(), |r| format!("#{r}")),
+            h.cosine.map_or(String::new(), |c| format!(" cos {c:.3}")),
+            if h.title_match { "  title" } else { "" }
+        );
+    }
 }
