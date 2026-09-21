@@ -34,6 +34,7 @@ pub fn run(args: &[String]) {
     };
     match stage {
         "text" => text_stage(&args[1..]),
+        "embed" => crate::embed::run(&args[1..]),
         "lexical" => match args.get(1) {
             Some(dir) => crate::lexical::run(Path::new(dir)),
             None => {
@@ -42,7 +43,7 @@ pub fn run(args: &[String]) {
             }
         },
         other => {
-            eprintln!("unknown build stage {other:?} (stages: text, lexical)");
+            eprintln!("unknown build stage {other:?} (stages: text, lexical, embed)");
             std::process::exit(2);
         }
     }

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 rill-knowledge = { path = "../rill-knowledge" }
+rill-knowledge-embed = { path = "../rill-knowledge-embed" }
 rill-store = { path = "../rill-store" }
 # The build side may be heavy; the engine may not. Source readers and the
 # embedder live here and never in rill-knowledge.
