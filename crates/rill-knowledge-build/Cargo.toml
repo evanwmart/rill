@@ -1,0 +1,29 @@
+[package]
+name = "rill-knowledge-build"
+description = "Builds knowledge packs: walks a Kiwix ZIM, joins the CirrusSearch dump, chunks, embeds, clusters, indexes, and packs."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rill-knowledge-build"
+path = "src/main.rs"
+
+[dependencies]
+rill-knowledge = { path = "../rill-knowledge" }
+rill-store = { path = "../rill-store" }
+# The build side may be heavy; the engine may not. Source readers and the
+# embedder live here and never in rill-knowledge.
+#
+# ZIM clusters are zstd (checked: 3707 of 3711 in the Kiwix Simple English
+# archive; the rest are stored). Same crate rill-store already links.
+zstd.workspace = true
+# CirrusSearch dumps: the legacy series is gzip, the weekly successor is
+# bzip2. Both decoders are pure Rust (miniz_oxide, libbz2-rs).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+bzip2 = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
