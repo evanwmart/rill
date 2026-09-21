@@ -218,10 +218,11 @@ best `beam`, recurse; union the leaves' members as candidates.
 ## 8. Postings — `lexical/`, `entity/`
 
 Terms: Unicode-lowercase, split on non-alphanumerics, no stemming. Lines
-sorted by term, one file per two-character prefix (terms shorter than two
-chars go to `_`). Non-ASCII first chars hash to a prefix file by their
-first byte. Lookup is binary search over the file by seeking to a midpoint
-and advancing to the next line.
+sorted bytewise by term, one file per prefix: the first two characters when
+both are ASCII alphanumerics, `_` for shorter terms, and `_xx` (first byte
+in hex) for anything else — so no key can name a directory or collide with
+an alphanumeric file. Lookup is binary search over the file by seeking to
+a midpoint and advancing to the next line.
 
 ```text
 <term>\t<df hex>\t<postings>

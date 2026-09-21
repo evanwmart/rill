@@ -61,13 +61,15 @@ pub fn format_line(term: &str, ids: &[u64]) -> String {
     format!("{term}\t{:x}\t{}", ids.len(), encode(ids))
 }
 
-/// Which file a term lives in: its first two chars, `_` for shorter terms,
-/// and a two-hex-digit byte name for non-ASCII first characters.
+/// Which file a term lives in: its first two characters when both are
+/// ASCII alphanumerics, `_` for shorter terms, and `_xx` (the first byte
+/// in hex) otherwise — so a key that starts with `.`, `/` or a non-ASCII
+/// letter never names a directory or an alphanumeric file.
 pub fn prefix_of(term: &str) -> String {
     let mut chars = term.chars();
     match (chars.next(), chars.next()) {
-        (Some(a), Some(b)) if a.is_ascii() && b.is_ascii() => format!("{a}{b}"),
-        (Some(a), _) if !a.is_ascii() => format!("{:02x}", term.as_bytes()[0]),
+        (Some(a), Some(b)) if a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric() => format!("{a}{b}"),
+        (Some(_), Some(_)) => format!("_{:02x}", term.as_bytes()[0]),
         _ => "_".to_string(),
     }
 }
@@ -174,8 +176,11 @@ mod tests {
     fn prefixes() {
         assert_eq!(prefix_of("quantum"), "qu");
         assert_eq!(prefix_of("q"), "_");
-        assert_eq!(prefix_of("émile"), "c3");
+        assert_eq!(prefix_of("émile"), "_c3");
         assert_eq!(prefix_of("42nd"), "42");
+        assert_eq!(prefix_of(".."), "_2e");
+        assert_eq!(prefix_of("/dev/null"), "_2f");
+        assert_eq!(prefix_of("ac/dc"), "ac");
     }
 
     #[test]

@@ -15,15 +15,19 @@
 //! * [`coarse`] — the CountSketch projection (§6).
 //! * [`node`] — semantic tree nodes and leaf members (§7).
 //! * [`postings`] — delta + LEB128 + Base64URL id lists (§8).
+//! * [`lexical`] — the tokenizer and the postings directories (§8).
+//! * [`query`] — the engine: runs, fusion, hits (§10).
 //! * [`manifest`] — `key=value` manifest (§9).
 //! * [`Pack`] — a read handle over an extracted pack directory.
 
 pub mod base64;
 pub mod coarse;
 pub mod doc;
+pub mod lexical;
 pub mod manifest;
 pub mod node;
 pub mod postings;
+pub mod query;
 pub mod text;
 pub mod vector;
 
