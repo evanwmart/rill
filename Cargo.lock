@@ -1403,6 +1403,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "knowledge-app"
+version = "0.1.0"
+dependencies = [
+ "rill-appkit",
+ "rill-auth",
+ "rill-knowledge",
+ "rill-protocol",
+ "rill-server",
+ "tokio",
+]
+
+[[package]]
 name = "launcher-app"
 version = "0.1.0"
 dependencies = [

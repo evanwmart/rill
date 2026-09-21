@@ -1,0 +1,17 @@
+[package]
+name = "knowledge-app"
+description = "The knowledge app: a search page over an extracted knowledge pack, its results and chunks as documents, and the pack's own resources."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rill-server = { path = "../../platform/rill-server" }
+rill-protocol = { path = "../../crates/rill-protocol" }
+rill-auth = { path = "../../crates/rill-auth" }
+rill-appkit = { path = "../../crates/rill-appkit" }
+rill-knowledge = { path = "../../crates/rill-knowledge" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

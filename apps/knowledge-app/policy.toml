@@ -1,0 +1,9 @@
+# The knowledge server's access policy (specs/security.md §4). The pack is
+# public wiki text and the search over it is public too: everything under
+# /knowledge is open to the Anonymous identity. Nothing else on the server
+# is. Install: copy next to the server's cert and key as <dir>/policy.toml.
+default_access = "deny"
+
+[[rule]]
+path = "/knowledge/**"
+allow = ["anonymous"]
