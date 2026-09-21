@@ -1,0 +1,14 @@
+[package]
+name = "rill-knowledge"
+description = "Knowledge packs: a files-only retrieval substrate (text shards, int8 vectors, coarse projections, semantic tree, postings) and the query engine over them."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Hashes only: every fingerprint in a pack is a rill-store BLAKE3 hash, so
+# `rill inspect` and the pack tooling read them without a second notion.
+rill-store = { path = "../rill-store" }
+
+[lints]
+workspace = true

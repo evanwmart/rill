@@ -16,6 +16,7 @@ members = [
     "crates/rill-history",
     "crates/rill-viewport",
     "crates/rill-client",
+    "crates/rill-knowledge",
     "platform/rill",
     "platform/rill-server",
     "platform/rill-compositor",
