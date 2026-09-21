@@ -263,11 +263,11 @@ mod tests {
 
     #[test]
     fn every_slide_compiles() {
-        for i in 0..PLAYLIST.len() {
+        for (i, slide) in PLAYLIST.iter().enumerate() {
             let now = (i as i64) * DWELL;
             let bytes = Ad.page(now).unwrap_or_else(|e| panic!("slide {i}: {e:?}"));
             let doc = rill_doc::decode(&bytes).expect("decodes");
-            assert!(doc.strings.iter().any(|s| s == PLAYLIST[i].headline[0]));
+            assert!(doc.strings.iter().any(|s| s == slide.headline[0]));
         }
     }
 

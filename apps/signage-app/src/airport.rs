@@ -1230,7 +1230,8 @@ mod tests {
     #[test]
     fn the_revision_holds_within_a_minute_and_moves_with_the_schedule() {
         let b = board();
-        let t = 1_800_000_000 - 1_800_000_000 % 60 + 5;
+        // 1_800_000_000 is on a minute boundary; five seconds into it.
+        let t = 1_800_000_000 + 5;
         let a = b.stamp(t);
         assert_eq!(a, b.stamp(t + 30), "same minute, same flights, same stamp");
         assert_ne!(a, b.stamp(t + 60), "the minute hand is part of the board");
