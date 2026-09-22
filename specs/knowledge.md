@@ -160,6 +160,14 @@ it is a format invariant, not a build detail:
   manifest records this (`embedding.doc_prefix`).
 * Exact duplicates (BLAKE3 of the normalised text) are stored once; the
   duplicate's document simply has one chunk fewer.
+* Formulas are kept as their TeX source: Parsoid carries it on the
+  `<math alttext>` (and the `x-tex` annotation); the walker emits inline
+  ones as `$…$` in the prose and display ones as `$$…$$` in a paragraph
+  of their own, minus the `{\displaystyle …}` wrapper. MathML and the
+  fallback image are dropped. Greek and other non-Latin letters are plain
+  UTF-8 in the source and pass through untouched. Rendering TeX on a
+  display is a document-format question (there is no math node), not an
+  ingest one; the source is what a renderer would need either way.
 
 ## 5. Full vectors — `vector/full/NNNN`
 

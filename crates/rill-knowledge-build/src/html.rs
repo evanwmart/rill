@@ -107,6 +107,14 @@ impl<'a> Iterator for Tokens<'a> {
 }
 
 /// The value of attribute `key` in a tag's attribute text.
+/// The TeX a formula was written in, without the `{\\displaystyle …}`
+/// wrapper Parsoid adds and with whitespace collapsed.
+pub fn tex_source(alttext: &str) -> String {
+    let t = alttext.trim();
+    let inner = t.strip_prefix("{\\displaystyle").and_then(|r| r.strip_suffix('}')).unwrap_or(t);
+    inner.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn attr<'a>(attrs: &'a str, key: &str) -> Option<&'a str> {
     let mut rest = attrs;
     while let Some(i) = rest.find(key) {
@@ -218,6 +226,8 @@ struct Walker {
     para: String,
     heading: Option<(u8, String)>,
     lists: Vec<ListState>,
+    /// The formula wrapper being entered is display-mode (its own line).
+    math_display: bool,
 }
 
 impl Walker {
@@ -267,8 +277,37 @@ impl Walker {
             }
             return;
         }
+        // Parsoid wraps every formula in `span.mwe-math-element`, inline
+        // ones also `-inline`; the `<math>` inside carries the TeX source
+        // as `alttext`. The source is what survives — MathML and the
+        // fallback image do not — as `$…$` in the prose or `$$…$$` as its
+        // own paragraph, so a formula stays readable, searchable, and
+        // renderable later by anything that knows TeX.
+        if name == "span" && class_contains(attrs, "mwe-math-element") {
+            self.math_display = !class_contains(attrs, "mwe-math-element-inline");
+        }
+        if name == "math" {
+            if let Some(tex) = attr(attrs, "alttext").map(decode_entities).map(|t| tex_source(&t)).filter(|t| !t.is_empty()) {
+                if self.math_display || attr(attrs, "display") == Some("block") {
+                    self.flush_para();
+                    self.sink().push_str(&format!("$${tex}$$"));
+                    self.flush_para();
+                } else {
+                    let sink = self.sink();
+                    if !sink.is_empty() && !sink.ends_with(' ') {
+                        sink.push(' ');
+                    }
+                    sink.push_str(&format!("${tex}$"));
+                }
+            }
+            self.skip_from_here();
+            if !void {
+                self.stack.push(name);
+            }
+            return;
+        }
         let skip = match name.as_str() {
-            "style" | "script" | "figure" | "noscript" | "svg" | "math" => true,
+            "style" | "script" | "figure" | "noscript" | "svg" => true,
             // Layout tables (multi-column bodies) carry article text and
             // are walked as flow; data and furniture tables are skipped.
             "table" if attr(attrs, "role") == Some("presentation") || has_class(attrs, "multicol") => false,
@@ -441,6 +480,7 @@ pub fn walk(html: &str) -> Walk {
         para: String::new(),
         heading: None,
         lists: Vec::new(),
+        math_display: false,
     };
     for tok in (Tokens { s: html, at: 0 }) {
         match tok {
@@ -524,5 +564,19 @@ mod tests {
         assert_eq!(attr(r#" class="a b" id='x' data-mw-section-id="0""#, "id"), Some("x"));
         assert_eq!(attr(r#" data-mw-section-id="0""#, "id"), None);
         assert!(has_class(r#" class="mw-ref reference""#, "reference"));
+    }
+
+    #[test]
+    fn formulas_survive_as_tex() {
+        let html = r##"<section data-mw-section-id="0"><p>If the sides are <i>a</i> and <i>b</i>, then <span class="mwe-math-element mwe-math-element-inline" typeof="mw:Extension/math"><span class="mwe-math-mathml-inline" style="display: none;"><math xmlns="http://www.w3.org/1998/Math/MathML" alttext="{\displaystyle a^{2}+b^{2}=c^{2}}"><semantics><mrow><mi>a</mi></mrow><annotation encoding="application/x-tex">{\displaystyle a^{2}+b^{2}=c^{2}}</annotation></semantics></math></span><img src="x.svg" class="mwe-math-fallback-image-inline" alt="{\displaystyle a^{2}+b^{2}=c^{2}}"></span> holds.</p>
+<p>The roots are</p><span class="mwe-math-element" typeof="mw:Extension/math"><span class="mwe-math-mathml-display" style="display: none;"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block" alttext="{\displaystyle x={\frac {-b\pm {\sqrt {b^{2}-4ac}}}{2a}}}"><semantics><mrow/></semantics></math></span><img src="y.svg" alt="z"></span><p>for α &gt; 0 and Ω.</p></section>"##;
+        let w = walk(html);
+        let paras: Vec<String> = w.sections.iter().flat_map(|s| s.blocks.iter()).map(|b| match b { Block::Paragraph(p) => p.clone(), Block::List(i) => i.join("; ") }).collect();
+        assert_eq!(paras[0], "If the sides are a and b, then $a^{2}+b^{2}=c^{2}$ holds.");
+        assert_eq!(paras[1], "The roots are");
+        assert_eq!(paras[2], "$$x={\\frac {-b\\pm {\\sqrt {b^{2}-4ac}}}{2a}}$$");
+        assert_eq!(paras[3], "for α > 0 and Ω.");
+        assert_eq!(tex_source("{\\displaystyle  E = m c^{2} }"), "E = m c^{2}");
+        assert_eq!(tex_source("x+1"), "x+1");
     }
 }
