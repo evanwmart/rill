@@ -2,7 +2,9 @@
 //! (`specs/knowledge.md` §1.8, §10). A Tier-0 document app: the display
 //! GETs a page, submits the search field as an ACTION, and renders the
 //! results document. The same results exist at `/knowledge/q/<query>` as a
-//! GET resource, every chunk at `/knowledge/c/<id>`, and the pack's own
+//! GET resource, every article at `/knowledge/d/<doc>` (with a matched
+//! passage marked at `/knowledge/d/<doc>/<chunk>`), every chunk at
+//! `/knowledge/c/<id>`, and the pack's own
 //! files (`manifest`, `text/…`, `doc/…`, indexes) under `/knowledge/` too,
 //! so the tree a query reads is the tree a client can fetch.
 //!
@@ -52,7 +54,7 @@ impl KnowledgeApp {
         let states = format!("state \"q\" initial={}\n", kdl_escape(query));
         let search = rill_appkit::search_field("q", "Search Simple English Wikipedia…", &rill_appkit::submit("/knowledge/actions/search", "field \"q\" from=\"q\""));
         let titlebar = rill_appkit::sidebar_header(&(rill_appkit::icon_slot("book-fill", &rill_appkit::navigate("/knowledge")) + &rill_appkit::location_title("Knowledge"))) + &rill_appkit::toolbar(&search);
-        let extra = "style \"hit-title\" size=17 weight=\"bold\"\nstyle \"snippet\" size=14\nstyle \"chunk-text\" size=15\n";
+        let extra = "style \"hit-title\" size=17 weight=\"bold\"\nstyle \"snippet\" size=14\nstyle \"chunk-text\" size=15\nstyle \"section-h\" size=19 weight=\"bold\"\nstyle \"section-sub\" size=16 weight=\"bold\"\n";
         let kdl = shell(&Shell {
             metrics,
             states: &states,
@@ -144,13 +146,56 @@ impl KnowledgeApp {
             "\t\t\t\tcolumn gap=4 padding=12 style=\"card\" {{\n\
              \t\t\t\t\tlink {} target={} style=\"hit-title\"\n\
              \t\t\t\t\ttext {} style=\"snippet\"\n\
-             \t\t\t\t\ttext {} style=\"muted\"\n\
+             \t\t\t\t\trow gap=12 {{ text {} style=\"muted\"; spacer; link \"this passage\" target={} style=\"muted\" }}\n\
              \t\t\t\t}}\n",
             kdl_escape(&head),
-            kdl_escape(&format!("/knowledge/c/{:x}", h.chunk)),
+            kdl_escape(&format!("/knowledge/d/{:x}/{:x}", h.doc, h.chunk)),
             kdl_escape(&snippet),
             kdl_escape(&why.join(" · ")),
+            kdl_escape(&format!("/knowledge/c/{:x}", h.chunk)),
         )
+    }
+
+    /// The whole article: every chunk in order, section headings restored,
+    /// one passage marked when the reader arrived from a result.
+    fn article_page(&self, doc_id: u32, mark: Option<u64>) -> Result<Vec<u8>, Status> {
+        let d = self.engine.doc(doc_id).ok_or(Status::NotFound)?;
+        let mut body = String::new();
+        body.push_str("\t\t\tcolumn gap=10 padding=8 {\n");
+        body.push_str(&format!("\t\t\t\ttext {} style=\"title\"\n", kdl_escape(&d.title)));
+        let mut meta = vec![format!("{} passages", d.chunk_count), format!("page {}", d.page_id)];
+        if let Some(q) = &d.qid {
+            meta.push(q.clone());
+        }
+        meta.push(format!("simple.wikipedia.org/wiki/{}", d.title.replace(' ', "_")));
+        body.push_str(&format!("\t\t\t\ttext {} style=\"muted\"\n", kdl_escape(&meta.join(" · "))));
+        let mut last_section = String::new();
+        for id in d.first_chunk..d.first_chunk + u64::from(d.chunk_count) {
+            let Ok(c) = self.engine.chunk(id) else { continue };
+            if c.section != last_section {
+                // `A > B` heading paths: the deepest part is the heading
+                // shown; a new top-level part gets the larger style.
+                let parts: Vec<&str> = c.section.split(" > ").collect();
+                let top_changed = parts.first().copied() != last_section.split(" > ").next();
+                if let Some(h) = parts.last().filter(|h| !h.is_empty()) {
+                    body.push_str(&format!("\t\t\t\tspacer size=6\n\t\t\t\ttext {} style=\"{}\"\n", kdl_escape(h), if top_changed || parts.len() == 1 { "section-h" } else { "section-sub" }));
+                }
+                last_section = c.section.clone();
+            }
+            let marked = mark == Some(id);
+            if marked {
+                body.push_str("\t\t\t\tcolumn gap=6 padding=10 style=\"card\" {\n");
+            }
+            for para in c.text.split('\n').filter(|p| !p.trim().is_empty()) {
+                body.push_str(&format!("\t\t\t\t\ttext {} style=\"chunk-text\"\n", kdl_escape(para)));
+            }
+            if marked {
+                body.push_str("\t\t\t\t\ttext \"↑ the passage this search matched\" style=\"muted\"\n\t\t\t\t}\n");
+            }
+        }
+        body.push_str("\t\t\t\trow gap=16 {\n\t\t\t\t\tspacer\n\t\t\t\t\tlink \"search\" target=\"/knowledge\" style=\"muted\"\n\t\t\t\t}\n");
+        body.push_str("\t\t\t}\n");
+        self.page("", &body)
     }
 
     fn chunk_page(&self, id: u64) -> Result<Vec<u8>, Status> {
@@ -180,6 +225,7 @@ impl KnowledgeApp {
         if id + 1 < d.first_chunk + u64::from(d.chunk_count) {
             body.push_str(&format!("\t\t\t\t\tlink \"next chunk →\" target={} style=\"muted\"\n", kdl_escape(&format!("/knowledge/c/{:x}", id + 1))));
         }
+        body.push_str(&format!("\t\t\t\t\tlink \"full article\" target={} style=\"muted\"\n", kdl_escape(&format!("/knowledge/d/{:x}/{:x}", d.id, id))));
         body.push_str("\t\t\t\t\tspacer\n\t\t\t\t\tlink \"search\" target=\"/knowledge\" style=\"muted\"\n\t\t\t\t}\n");
         body.push_str("\t\t\t}\n");
         self.page("", &body)
@@ -244,6 +290,13 @@ impl AppHandler for KnowledgeApp {
                 if let Some(hex) = rest.strip_prefix("c/") {
                     return u64::from_str_radix(hex, 16).ok().and_then(|id| self.chunk_page(id).ok());
                 }
+                if let Some(spec) = rest.strip_prefix("d/") {
+                    let (doc, mark) = match spec.split_once('/') {
+                        Some((d, c)) => (d, u64::from_str_radix(c, 16).ok()),
+                        None => (spec, None),
+                    };
+                    return u32::from_str_radix(doc, 16).ok().and_then(|d| self.article_page(d, mark).ok());
+                }
                 self.pack_file(rest)
             }
         }
@@ -253,7 +306,7 @@ impl AppHandler for KnowledgeApp {
         // The pack is immutable, so a pack file never changes; pages read
         // the theme too, so they stay unstamped.
         let rest = path.strip_prefix("/knowledge/")?;
-        (!rest.starts_with("q/") && !rest.starts_with("c/") && !rest.is_empty()).then_some(1)
+        (!rest.starts_with("q/") && !rest.starts_with("c/") && !rest.starts_with("d/") && !rest.is_empty()).then_some(1)
     }
 
     fn action(&self, path: &str, fields: &[(String, ActionValue)], _identity: &Identity) -> Result<Vec<u8>, Status> {
