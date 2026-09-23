@@ -2,7 +2,7 @@
 //! entity runs fused by reciprocal rank, a title boost, one hit per
 //! document. Semantic runs join when the pack carries vectors.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -23,12 +23,18 @@ pub const TITLE_BOOST: f32 = 1.25;
 pub const SEMANTIC_RUN: usize = 200;
 /// Weight of the lexical run's reciprocal ranks when every term matched.
 /// Without term frequencies the run is ranked by article popularity among
-/// the matches, which is weak next to a cosine; a gold-set sweep on
-/// 2026-09-21 (specs/knowledge.md §12) chose 0.5 here and 0.25 below as
-/// the only pair that kept every answerable hand question in the top ten.
+/// the matches, which is weak next to a cosine, so the weight is standing
+/// in for the ranking signal the postings do not carry (spec §7).
+///
+/// A gold-set sweep on 2026-09-21 (specs/knowledge.md §12) chose 0.5 here
+/// and 0.25 below: over that set's twelve hand questions they were the
+/// only pair keeping every answerable one in the top ten. Twelve questions
+/// cannot separate 0.5 from 0.4, so treat the pair as provisional — the
+/// spec does — and re-sweep when the gold set grows.
 pub const LEXICAL_WEIGHT: f32 = 0.5;
 /// Weight when no chunk matched every term (the OR fallback): weaker
 /// still, and at full weight it crowds a strong semantic hit out.
+/// Provisional on the same twelve questions as [`LEXICAL_WEIGHT`].
 pub const LEXICAL_OR_WEIGHT: f32 = 0.25;
 /// Question and function words dropped from the lexical run: they are
 /// under the stop share yet say nothing about the answer, and with them in
@@ -268,12 +274,17 @@ impl Engine {
         }
         res.lexical_candidates = lexical.len();
         // Rank: more terms matched, then the more-read article, then id.
-        lexical.sort_by(|a, b| {
+        // Popularity is resolved once per candidate rather than inside the
+        // comparator: `doc_of` is a binary search plus a walk-back, and a
+        // comparator would pay for it O(n log n) times.
+        let mut ranked: Vec<(ChunkId, usize, f64)> = lexical.into_iter().map(|(c, n)| (c, n, self.popularity_of(c))).collect();
+        ranked.sort_by(|a, b| {
             b.1.cmp(&a.1)
-                .then_with(|| self.popularity_of(b.0).partial_cmp(&self.popularity_of(a.0)).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
                 .then(a.0.cmp(&b.0))
         });
-        lexical.truncate(LEXICAL_RUN);
+        ranked.truncate(LEXICAL_RUN);
+        let lexical: Vec<(ChunkId, usize)> = ranked.into_iter().map(|(c, n, _)| (c, n)).collect();
 
         // Entity run: the whole query as a title, plus any Q-ids in it.
         let mut entity: Vec<ChunkId> = Vec::new();
@@ -288,7 +299,7 @@ impl Engine {
                 entity.extend(ids);
             }
         }
-        entity.dedup();
+        dedup_keep_first(&mut entity);
         res.entity_candidates = entity.len();
 
         // Semantic run.
@@ -359,6 +370,19 @@ impl Engine {
     }
 }
 
+/// Candidate ids in first-appearance order, each kept once.
+///
+/// The entity run concatenates several posting lists — the query as a
+/// title, then one per Q-id — so the same chunk can arrive from two of
+/// them. `Vec::dedup` drops only *adjacent* repeats, and a survivor is
+/// scored twice by the fusion below, with its `entity_rank` overwritten by
+/// the worse of the two. First appearance wins so a title hit keeps the
+/// better rank than the same chunk reached through a Q-id.
+fn dedup_keep_first(ids: &mut Vec<ChunkId>) {
+    let mut seen = HashSet::new();
+    ids.retain(|c| seen.insert(*c));
+}
+
 fn intersect(a: &[ChunkId], b: &[ChunkId]) -> Vec<ChunkId> {
     let (mut i, mut j) = (0, 0);
     let mut out = Vec::new();
@@ -379,6 +403,30 @@ fn intersect(a: &[ChunkId], b: &[ChunkId]) -> Vec<ChunkId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_candidates_drop_non_adjacent_repeats() {
+        // A title lookup returning [7, 9] followed by a Q-id lookup
+        // returning [7]: the repeat is not adjacent, so the fusion would
+        // add chunk 7's reciprocal rank twice.
+        let mut ids = vec![7, 9, 7];
+        dedup_keep_first(&mut ids);
+        assert_eq!(ids, vec![7, 9]);
+
+        let mut adjacent_only = vec![7, 9, 7];
+        adjacent_only.dedup();
+        assert_eq!(adjacent_only, vec![7, 9, 7], "Vec::dedup keeps the non-adjacent repeat");
+
+        // Order stays first appearance, not sorted: the run's rank is its
+        // position, and the title lookup goes first.
+        let mut order = vec![9, 3, 9, 1, 3];
+        dedup_keep_first(&mut order);
+        assert_eq!(order, vec![9, 3, 1]);
+
+        let mut empty: Vec<ChunkId> = Vec::new();
+        dedup_keep_first(&mut empty);
+        assert!(empty.is_empty());
+    }
 
     #[test]
     fn intersection_is_sorted_merge() {
