@@ -1,0 +1,15 @@
+[package]
+name = "rill-math"
+description = "The TeX subset Rill documents can show: parse to an expression tree, render to Unicode."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# No dependencies, deliberately: this is a parser over `&str` and two
+# lookup tables. It is linked by the knowledge build tool (which measures
+# corpus coverage) and later by rill-appkit (which emits nodes), so it must
+# not drag presentation or platform code into either.
+[dependencies]
+
+[lints]
+workspace = true

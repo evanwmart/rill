@@ -16,6 +16,7 @@ members = [
     "crates/rill-history",
     "crates/rill-viewport",
     "crates/rill-client",
+    "crates/rill-math",
     "crates/rill-knowledge",
     "crates/rill-knowledge-build",
     "crates/rill-knowledge-embed",

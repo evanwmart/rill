@@ -5067,6 +5067,7 @@ dependencies = [
  "flate2",
  "rill-knowledge",
  "rill-knowledge-embed",
+ "rill-math",
  "rill-store",
  "serde",
  "serde_json",
@@ -5089,6 +5090,10 @@ version = "0.1.0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "rill-math"
+version = "0.1.0"
 
 [[package]]
 name = "rill-pack"
