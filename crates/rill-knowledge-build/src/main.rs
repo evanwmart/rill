@@ -12,6 +12,7 @@ mod html;
 mod ingest;
 mod inspect;
 mod lexical;
+mod math;
 mod source;
 mod zim;
 
@@ -21,6 +22,7 @@ fn main() {
         Some("probe-source") => probe_source(&args[1..]),
         Some("build") => build::run(&args[1..]),
         Some("inspect") => inspect::run(&args[1..]),
+        Some("math-coverage") => math::run(&args[1..]),
         Some("eval") => eval::run(&args[1..]),
         Some("query") => eval::query(&args[1..]),
         _ => {
