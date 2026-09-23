@@ -17,11 +17,11 @@
 use std::sync::Arc;
 
 use rill_appkit::{Metrics, Shell, kdl_escape, shell};
-use rill_knowledge::query::{Engine, Hit, Mode, Results};
-use rill_knowledge_embed::{Embedder, QUERY_PREFIX};
-use rill_knowledge::text::Chunk;
-use rill_protocol::{ActionValue, Status};
 use rill_auth::Identity;
+use rill_knowledge::query::{Engine, Hit, Mode, Results};
+use rill_knowledge::text::Chunk;
+use rill_knowledge_embed::{Embedder, QUERY_PREFIX};
+use rill_protocol::{ActionValue, Status};
 use rill_server::{AppHandler, Server, ServerConfig};
 
 const APP: &str = "knowledge";
@@ -38,7 +38,6 @@ struct KnowledgeApp {
 }
 
 impl KnowledgeApp {
-
     fn semantic_status(&self) -> String {
         match (self.engine.semantic_available(), &self.embedder) {
             (true, Some(_)) => "on".into(),
@@ -46,9 +45,7 @@ impl KnowledgeApp {
             (false, _) => "unavailable (no vectors in this pack)".into(),
         }
     }
-}
 
-impl KnowledgeApp {
     fn page(&self, query: &str, body: &str) -> Result<Vec<u8>, Status> {
         let metrics = Metrics::from_theme_file(&Metrics::theme_path());
         let states = format!("state \"q\" initial={}\n", kdl_escape(query));
@@ -112,7 +109,12 @@ impl KnowledgeApp {
             kdl_escape(&format!("/knowledge/q/{query}")),
         ));
         if res.hits.is_empty() {
-            body.push_str("\t\t\t\ttext \"Nothing matched. Fewer or different words usually help; the index is exact terms, not meanings, until the vectors land.\" style=\"muted\"\n");
+            let hint = if res.semantic_available {
+                "Fewer or different words usually help."
+            } else {
+                "Fewer or different words usually help; without a query embedder this searches exact terms, not meanings."
+            };
+            body.push_str(&format!("\t\t\t\ttext {} style=\"muted\"\n", kdl_escape(&format!("Nothing matched. {hint}"))));
         }
         for h in &res.hits {
             body.push_str(&self.hit_card(h, &res));
