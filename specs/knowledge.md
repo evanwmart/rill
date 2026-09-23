@@ -167,7 +167,8 @@ it is a format invariant, not a build detail:
   fallback image are dropped. Greek and other non-Latin letters are plain
   UTF-8 in the source and pass through untouched. Rendering TeX on a
   display is a document-format question (there is no math node), not an
-  ingest one; the source is what a renderer would need either way.
+  ingest one; the source is what a renderer would need either way. That
+  question is answered in [knowledge-math.md](knowledge-math.md).
 
 ## 5. Full vectors — `vector/full/NNNN`
 
@@ -288,22 +289,33 @@ on a mismatch.
 ## 10. Query (engine)
 
 ```text
-classify (ids, quoted phrases, capitalised names)
-embed query (prefix + text) → 384-d → coarse 64-d
-semantic: beam over tree → leaf members (≈5–20k)
-lexical:  terms → postings ∩/∪ (AND first, OR if empty)
-entity:   qids / aliases → first chunks
-coarse rank all candidates (int8 cosine, 64-d) → top 1024
-full rank (int8 cosine, 384-d)               → top 64
-RRF over the three runs (k = 60); lexical run weighted 0.5 (0.25 in the
-  OR fallback), question/function words dropped from it; boosts: title,
-  phrase, entity, section
-neighbour expansion (c−1, c+1 within the document)
-top N → fetch text → document
+classify (ids, quoted phrases, capitalised names)          [planned]
+embed query (prefix + text) → 384-d → coarse 64-d          [live, 384-d only]
+semantic: beam over tree → leaf members (≈5–20k)           [planned]
+lexical:  terms → postings ∩/∪ (AND first, OR if empty)    [live]
+entity:   qids / aliases → first chunks                    [live, title + Q-id]
+coarse rank all candidates (int8 cosine, 64-d) → top 1024  [planned]
+full rank (int8 cosine, 384-d)               → top 64      [live as brute force]
+RRF over the three runs (k = 60); lexical run weighted 0.5 [live, title boost]
+  (0.25 in the OR fallback), question/function words
+  dropped from it; boosts: title, phrase, entity, section
+neighbour expansion (c−1, c+1 within the document)         [planned]
+top N → fetch text → document                              [live]
 ```
 
-Every stage records what it did (route, candidate counts, per-run ranks,
-final score) for the explain page.
+`[live]` is what `rill-knowledge::query` runs today; `[planned]` is
+specified here and unbuilt — the split is deliberate, the way §12 separates
+measured from targeted. The live semantic run is the brute-force cosine
+over every chunk that §2 names as the recall ceiling, keeping the top
+`SEMANTIC_RUN` = 200. So the tree (§7), the coarse pre-rank and the
+manifest's `retrieval.coarse_candidates` / `retrieval.full_candidates` are
+written by the build and read by nothing yet; `node.rs` carries the tree
+reader, and its producer lands when a pack outgrows a resident scan
+(§12 Targets), not before. Of the boosts only title is applied.
+
+Every live stage records what it did (route, candidate counts, per-run
+ranks, final score) for the explain page; the planned stages have nothing
+to record yet.
 
 ## 11. Invariants
 
@@ -360,3 +372,6 @@ p50 < 25 ms excluding the embed.
    source; the ZIM has them).
 3. Whether the results page, being a GET resource, should be history-
    sealed by the app. Not in v0.
+4. Math rendering: the tiers, the subset and the format gaps are in
+   [knowledge-math.md](knowledge-math.md). Its §6 coverage pass wants a
+   built pack before the structural backend is written.
