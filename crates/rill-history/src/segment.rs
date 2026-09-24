@@ -3,15 +3,16 @@
 //! ```text
 //! header (plaintext)  magic RHS\x01 | format ver | device fp | time base
 //!                     | keyslot table | flags
-//! chunk*              [len u32 | codec u8 | payload]   payload = zstd(events)
-//!                     (AEAD wraps the payload once key plumbing lands; the
-//!                      keyslot table and per-chunk framing are already
-//!                      shaped for it — see specs/history.md)
+//! chunk*              [len u32 | codec u8 | blake3(plaintext)[..4] | payload]
+//!                     payload = zstd(events), or nonce || AEAD(zstd(events))
+//!                     under the segment's data key (codec 2, ZstdSealed);
+//!                     the 4-byte hash is always of the plaintext
 //! seal (iff sealed)   per-tier indexes | footer: event count | time range
 //!                     | sealed-at | tiers | chunk count | blake3 of
 //!                     plaintext | merkle root
-//! tail (iff sealed)   [seal_len u32 | SEAL_MAGIC]  — the last eight bytes,
-//!                     which is how a reader knows without scanning
+//! tail (iff sealed)   [blake3(seal region) 32B | seal_len u32 | SEAL_MAGIC]
+//!                     — the last forty bytes (SEAL_TAIL), which is how a
+//!                     reader knows without scanning
 //! ```
 //!
 //! Three properties the shape exists to guarantee:
@@ -634,7 +635,8 @@ fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
 }
 
 /// Encode the seal region: `[n_indexes u8] ([tier u8][len u32][blob])*` then
-/// the footer fields. The tail `[seal_len u32][SEAL_MAGIC]` goes after it.
+/// the footer fields. The tail `[blake3(region) 32B][seal_len u32][SEAL_MAGIC]`
+/// goes after it.
 fn encode_seal(seal: &Seal, key: Option<&DataKey>) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(seal.indexes.len() as u8);

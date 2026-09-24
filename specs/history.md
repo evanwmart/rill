@@ -485,7 +485,8 @@ or every line is entered twice.
 * **Active segments are already encrypted** (no plaintext window on
   disk); sealing only appends footer + index — no rewrite, no
   double-write amplification.
-* Rotation: ~64MiB raw or hourly, whichever first. Recorder writes from
+* Rotation: ~64MiB raw (`SEGMENT_TARGET`; the hourly trigger is not built —
+  rotation is size-only as shipped). Recorder writes from
   its own thread; the compositor hands it event batches through a
   bounded queue — overflow drops batches and emits `Gap` (never blocks).
 
