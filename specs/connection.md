@@ -102,8 +102,9 @@ Client-side caps while streaming:
 * Client pings after `[default 30 s]` idle; an unanswered PING after
   `[default 10 s]` closes the connection.
 * PING payload: 8 counter bytes; PONG must echo exactly (protocol spec §7.3a).
-* The CLI (one process per command) does not keep alive; the client *library*
-  does, for future rill-view use.
+* The CLI (one process per command) does not keep alive. The client library
+  exposes `ping()`; the viewport's fetcher (rill-viewport) drives it on the
+  connection it holds open, with the idle and unanswered thresholds above.
 
 ---
 
@@ -111,10 +112,11 @@ Client-side caps while streaming:
 
 | Side   | Knob                        | Default | Meaning                                    |
 |--------|-----------------------------|---------|--------------------------------------------|
-| client | connect timeout             | 10 s    | TCP (+ TLS in Phase 3) established         |
+| client | connect timeout             | 10 s    | applied twice, separately: TCP connect, then the TLS handshake |
 | client | first-byte timeout          | 30 s    | request sent → first response header byte  |
 | client | inter-chunk timeout         | 30 s    | gap between response frames                |
 | client | total resource cap          | 32 MiB  | §4; abort + close on excess                |
+| server | handshake timeout           | 10 s    | accept() → TLS handshake complete, else drop (bounds a slow-handshake hold) |
 | server | idle timeout                | 300 s   | READY with no bytes → CLOSE and drop       |
 | server | intra-frame read timeout    | 30 s    | header started → rest of frame must arrive |
 | server | write timeout               | 30 s    | per-frame write completes                  |
