@@ -238,6 +238,20 @@ BLAKE3 (32 bytes) of the entire file before the footer, then tail magic
 verify` checks the footer hash and every resource hash. Per-resource reads
 are always hash-verified regardless.
 
+### Reader limits
+
+Two rules a pack builder must know that the layout alone does not say,
+both enforced by `Pack::open` (rill-pack):
+
+* **A pack holds at least one resource.** `resource count = 0` is rejected
+  on open, and the builder refuses to produce one.
+* **`decoded size` ≤ 32 MiB per entry.** The index's own `decoded size` is
+  what the decompressor is handed as its bomb cap, so without a ceiling a
+  hostile pack sets its own budget; `verify` extracts every entry, which is
+  what installing an app does. The ceiling equals the client's default
+  `max_resource` (§8): a pack is a bundle of the same resources, so one
+  entry is never larger than one fetch.
+
 ### Determinism
 
 Byte-identical output for identical input trees: paths sorted, no

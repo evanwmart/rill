@@ -461,6 +461,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The reader's half of the "at least one resource" rule
+    /// (resource-format.md §9, Reader limits): a file whose every other
+    /// layout check passes — string table and index both empty, footer in
+    /// place — still does not open when it declares zero resources. The
+    /// builder's refusal is pinned in `builder_rejects_bad_input`.
+    #[test]
+    fn a_pack_with_no_resources_does_not_open() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&MAGIC);
+        bytes.push(VERSION);
+        bytes.extend_from_slice(&[0, 0, 0]);
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // count
+        bytes.extend_from_slice(&HEADER_LEN.to_be_bytes()); // string table offset
+        bytes.extend_from_slice(&0u64.to_be_bytes()); // string table size
+        bytes.extend_from_slice(&HEADER_LEN.to_be_bytes()); // index offset
+        bytes.extend_from_slice(&0u64.to_be_bytes()); // index size
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        assert_eq!(bytes.len() as u64, HEADER_LEN);
+        bytes.extend_from_slice(&Hash::of(&bytes).0);
+        bytes.extend_from_slice(&TAIL_MAGIC);
+        let path = tmp().join("empty.rillpack");
+        std::fs::write(&path, &bytes).unwrap();
+        let Err(e) = Pack::open(&path) else { panic!("an empty pack must not open") };
+        assert!(e.0.contains("inconsistent section layout"), "{e}");
+    }
+
     #[test]
     fn deterministic_builds() {
         // Same content, different insertion order → identical bytes.
