@@ -1598,8 +1598,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _dmabuf_global = dmabuf_state.create_global::<Rill>(&dh, dmabuf_formats);
 
     // Vector-native window content (rill_stream_v1, W4).
-    // Version 2: streams inherit it, and that is what makes attach_image
-    // reachable (see the manager's description in rill-stream-v1.xml).
+    // Version 3: streams inherit it, and that is what makes attach_image
+    // (v2) and set_tier (v3) reachable (see the manager's description in
+    // rill-stream-v1.xml).
     let _stream_global = dh.create_global::<Rill, RillStreamManagerV1, ()>(3, ());
 
     let (out_w, out_h, model) = match &presenter {

@@ -18,10 +18,11 @@
     <description summary="stream manager">
       Global for turning a wl_surface into a vector-native surface.
 
-      Version 2 adds rill_stream_v1.attach_image. The version lives here as
-      well as on the stream because a stream inherits the version of the
-      manager that created it — a v1 manager can only ever make a v1 stream,
-      whatever the stream interface itself declares.
+      Version 2 adds rill_stream_v1.attach_image; version 3 adds
+      rill_stream_v1.set_tier. The version lives here as well as on the
+      stream because a stream inherits the version of the manager that
+      created it — a v1 manager can only ever make a v1 stream, whatever
+      the stream interface itself declares.
     </description>
 
     <enum name="error">
@@ -82,6 +83,13 @@
         the frame becomes the surface content on the next
         wl_surface.commit. width and height are the logical size the frame
         was laid out for.
+
+        Caps, enforced before any decode: size is at most 4 MiB
+        (rill_draw::stream::MAX_STREAM_SIZE), else oversized; width and
+        height are each in 1..=16384, else invalid_stream. The bytes then
+        go through the strict stream decoder, and any decode failure is
+        invalid_stream. Every error on this interface is fatal to the
+        client connection, as Wayland protocol errors are.
       </description>
       <arg name="fd" type="fd"/>
       <arg name="size" type="uint"/>
@@ -96,8 +104,8 @@
         showing the placeholder box.
 
         `fd` holds raw RGBA8, top-left origin, tightly packed: `size` must
-        equal width * height * 4 exactly, or the compositor raises
-        image_malformed. Raw, not an encoded format, deliberately — the
+        equal width * height * 4 exactly, and width and height must each be
+        in 1..=16384, or the compositor raises image_malformed. Raw, not an encoded format, deliberately — the
         compositor decoding client-supplied PNGs would put an image codec
         on the path of untrusted bytes, and the client has the decoded
         pixels already.
@@ -112,7 +120,8 @@
         drop its own. Re-attaching the same source replaces it — that is
         how an image that changed is updated.
 
-        Images are held against a per-surface byte budget. When it is
+        Images are held against a per-surface byte budget of 64 MiB of
+        decoded pixels. When it is
         reached the compositor releases images the current frame does not
         name, least recently used first, and says so with image_released.
         image_budget is raised only when even that is not enough — a single
