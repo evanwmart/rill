@@ -400,7 +400,7 @@ distinction NOT_FOUND exists to erase. Handler results are clamped to
 | MAX_PING_PAYLOAD   | 64 bytes         | decoder                         |
 | MAX_ACTION_FIELDS  | 32               | ACTION decoder (§7.5)           |
 | MAX_FIELD_NAME     | 64 bytes         | ACTION decoder (§7.5)           |
-| MAX_FIELD_STRING   | 1024 bytes       | ACTION decoder (§7.5); clients cap input to match |
+| MAX_FIELD_STRING   | 65535 bytes (`0xFFFF`) | ACTION decoder (§7.5); the `u16 len` ceiling; clients cap input to match |
 | header size        | 16 bytes, fixed  | —                               |
 
 Limits are protocol constants, not negotiated. Raising one is a version bump.

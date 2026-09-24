@@ -102,7 +102,7 @@ A **Value** is a 1-byte tag then its payload (the same encoding ACTION fields
 use, protocol.md §7.5):
 
 ```text
-tag 1  string  u16 len (≤ 1024) + UTF-8 bytes
+tag 1  string  u16 len (≤ MAX_FIELD_STRING, protocol.md §9) + UTF-8 bytes
 tag 2  number  f64 big-endian, finite
 tag 3  bool    1 byte (0 = false, 1 = true)
 ```

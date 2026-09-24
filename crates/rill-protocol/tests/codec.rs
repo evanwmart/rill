@@ -517,6 +517,36 @@ fn action_roundtrip_and_rejections() {
     assert!(encode(&nan, &mut out).is_err());
 }
 
+/// §9 MAX_FIELD_STRING is the `u16 len` ceiling, 65535 — not the 1024 the
+/// spec once said. A stranger's decoder capped at 1024 would refuse a legal
+/// frame from the editor, so the constant is pinned here as a wire fact: a
+/// string exactly at the cap round-trips, one byte over is refused at encode.
+#[test]
+fn action_string_cap_is_the_u16_ceiling() {
+    use rill_protocol::{ActionValue, MAX_FIELD_STRING};
+    assert_eq!(MAX_FIELD_STRING, u16::MAX as usize);
+
+    let at_cap = Frame::Action {
+        request_id: 1,
+        path: "/a".into(),
+        fields: vec![("body".into(), ActionValue::Str("x".repeat(MAX_FIELD_STRING)))],
+        cas: false,
+    };
+    roundtrip(&at_cap);
+
+    let over = Frame::Action {
+        request_id: 1,
+        path: "/a".into(),
+        fields: vec![("body".into(), ActionValue::Str("x".repeat(MAX_FIELD_STRING + 1)))],
+        cas: false,
+    };
+    let mut out = Vec::new();
+    assert!(matches!(
+        encode(&over, &mut out),
+        Err(FrameError::LengthMismatch { expected, .. }) if expected == MAX_FIELD_STRING
+    ));
+}
+
 /// A conditional ACTION round-trips with its flag, and the flag and the
 /// field travel together in both directions: encoding one without the other
 /// is refused, and so is decoding it.
