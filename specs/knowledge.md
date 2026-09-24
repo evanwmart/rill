@@ -280,7 +280,10 @@ source.wiki=simple.wikipedia.org
 ```
 
 A pack MUST NOT be queried semantically by an embedder whose model hash
-differs; the engine reports lexical-only in that case.
+differs. The engine never sees the embedder — it takes a query vector from
+its host — so the host enforces this: knowledge-app and the `eval` command
+compare `embedding.model_hash` before supplying one and answer lexically
+on a mismatch.
 
 ## 10. Query (engine)
 
