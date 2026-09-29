@@ -25,5 +25,9 @@ path = "/museum/**"
 allow = ["anonymous"]
 
 [[rule]]
+path = "/morning/**"
+allow = ["anonymous"]
+
+[[rule]]
 path = "/public/**"
 allow = ["anonymous"]

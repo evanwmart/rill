@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The signage server on the glass: start it, pin it, point the kiosk at it.
 #
-#   deploy/pi/signage.sh gate|airport|ad|museum   # start (or restart) + choose the page
+#   deploy/pi/signage.sh gate|airport|ad|museum|morning   # start (or restart) + choose the page
 #   deploy/pi/signage.sh reset                    # restart the server: the demo loop starts over
 #   deploy/pi/signage.sh gate --from HOST:PORT    # read the page from another machine's signage
 #                                                 # server instead (pins it; local server left alone)
@@ -47,9 +47,9 @@ case "${1:-}" in
       *) echo "usage: $0 feed down|up" >&2; exit 2 ;;
     esac
     exit 0 ;;
-  gate|airport|ad|museum) page=$1 ;;
+  gate|airport|ad|museum|morning) page=$1 ;;
   reset) page=$(sed 's|.*/||' "$HOME/kiosk.url" 2>/dev/null); page=${page:-gate} ;;
-  *) echo "usage: $0 gate|airport|ad|museum | reset | stop | feed down|up" >&2; exit 2 ;;
+  *) echo "usage: $0 gate|airport|ad|museum|morning | reset | stop | feed down|up" >&2; exit 2 ;;
 esac
 
 if [ -n "$FROM" ]; then

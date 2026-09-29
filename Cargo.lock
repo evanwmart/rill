@@ -5530,7 +5530,10 @@ dependencies = [
  "rill-doc",
  "rill-protocol",
  "rill-server",
+ "rill-ui",
+ "serde_json",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]

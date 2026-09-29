@@ -10,9 +10,16 @@
 //! * `/ad` — a store-window rotation. A playlist on the server's clock,
 //!   so every window shows the same slide; polls cost nothing between
 //!   slides (see `ad.rs`).
+//! * `/morning` — the morning board (`morning.rs`): greeting, date and
+//!   clock over the glass's own wallpaper; the rest of the board grows here.
 //! * `/museum` — an exhibit label. Words with structure, three languages,
 //!   two sizes, no motion; the document a screen reader or a cache can
 //!   hold (see `museum.rs`).
+//!
+//! Beside the pages, the server keeps the day's **sky map** (`sky.rs`) for
+//! the glass's wallpaper: when `<data>/morning.toml` names a latitude and
+//! longitude, `<data>/sky.toml` is rewritten at start and whenever the day
+//! turns, and the compositor reads it by the clock.
 //!
 //! ```bash
 //! signage-app --identity <server-dir> [--data DIR] [--content DIR] [--port 7440] [--bind 127.0.0.1] [--demo]
@@ -25,7 +32,11 @@
 
 mod ad;
 mod airport;
+mod messages;
+mod morning;
 mod museum;
+mod sky;
+mod weather;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -85,6 +96,12 @@ fn main() {
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     runtime.block_on(async move {
+        let config = morning::Config::load(&data.join("morning.toml"));
+        if let (Some(latitude), Some(longitude)) = (config.latitude, config.longitude) {
+            tokio::spawn(sky_keeper(latitude, longitude, data.join("sky.toml")));
+        } else {
+            eprintln!("signage-app: no latitude/longitude in {}: no sky map", data.join("morning.toml").display());
+        }
         let cfg = ServerConfig::new(content, identity);
         let mut server = Server::bind(&bind, port, cfg).await.expect("bind");
         let board = Arc::new(airport::Board::new(data.clone(), seed, timeline));
@@ -92,10 +109,41 @@ fn main() {
         server.dynamic("/gate", board);
         server.dynamic("/ad", Arc::new(ad::Ad));
         server.dynamic("/museum", Arc::new(museum::Label));
+        server.dynamic("/morning", Arc::new(morning::Morning::new(config, &data)));
         eprintln!(
-            "signage-app: serving /gate /airport /ad /museum on {bind}:{port} (feed switch: {})",
+            "signage-app: serving /gate /airport /ad /museum /morning on {bind}:{port} (feed switch: {})",
             data.join("feed-down").display()
         );
         server.run().await.expect("run");
     });
+}
+
+/// Keep `sky.toml` current: written at start, then rewritten when the local
+/// day changes or `weather.json` does (cloud, rain and visibility set the
+/// table's desaturation); checked every ten minutes.
+async fn sky_keeper(latitude: f64, longitude: f64, path: std::path::PathBuf) {
+    let weather_path = path.with_file_name("weather.json");
+    let mut written: Option<(u32, Option<std::time::SystemTime>)> = None;
+    loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let s = sky::site_now(latitude, longitude, now);
+        let stamp = std::fs::metadata(&weather_path).and_then(|m| m.modified()).ok();
+        if written != Some((s.day_of_year, stamp)) {
+            let hours = weather::Forecast::load(&weather_path).map(|f| f.sky_hours(now));
+            let weather: Option<&[sky::WeatherHour]> = hours.as_deref();
+            let map = sky::build(&s, weather);
+            let label = format!("day {} at {latitude:.3},{longitude:.3}", s.day_of_year);
+            match map.write(&path, &label) {
+                Ok(()) => {
+                    eprintln!("signage-app: sky map written: {} ({label}, weather: {})", path.display(), if hours.is_some() { "yes" } else { "none" });
+                    written = Some((s.day_of_year, stamp));
+                }
+                Err(e) => eprintln!("signage-app: sky map {}: {e}", path.display()),
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    }
 }
