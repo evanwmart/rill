@@ -139,6 +139,13 @@ const SOURCES: &[(&str, &str)] = &[
     ("warning-fill", include_str!("../phosphor/warning-fill.svg")),
     ("info-fill", include_str!("../phosphor/info-fill.svg")),
     ("sun-fill", include_str!("../phosphor/sun-fill.svg")),
+    // Weather, for the morning board: night and the conditions the sun and
+    // cloud glyphs cannot say.
+    ("moon-fill", include_str!("../phosphor/moon-fill.svg")),
+    ("cloud-moon-fill", include_str!("../phosphor/cloud-moon-fill.svg")),
+    ("cloud-snow", include_str!("../phosphor/cloud-snow.svg")),
+    ("cloud-fog", include_str!("../phosphor/cloud-fog.svg")),
+    ("cloud-lightning", include_str!("../phosphor/cloud-lightning.svg")),
     ("cloud-fill", include_str!("../phosphor/cloud-fill.svg")),
     ("cloud-sun-fill", include_str!("../phosphor/cloud-sun-fill.svg")),
     ("cloud-rain-fill", include_str!("../phosphor/cloud-rain-fill.svg")),
@@ -178,6 +185,23 @@ fn viewbox_width(svg: &str) -> f32 {
         })
         .filter(|w| *w > 0.0)
         .unwrap_or(ICON_VIEWBOX)
+}
+
+/// An SVG's `viewBox` as `(x, y, w, h)`, or `None` when it has none.
+pub fn viewbox(svg: &str) -> Option<(f32, f32, f32, f32)> {
+    let i = svg.find("viewBox=\"")?;
+    let rest = &svg[i + 9..];
+    let end = rest.find('"')?;
+    let mut parts = rest[..end].split_whitespace().map(|p| p.parse::<f32>().ok());
+    let (x, y, w, h) = (parts.next()??, parts.next()??, parts.next()??, parts.next()??);
+    (w > 0.0 && h > 0.0).then_some((x, y, w, h))
+}
+
+/// Every `<path>` in an SVG as flattened rings in viewBox units, with the
+/// fill the element carries (`None` = the caller's colour). For scenes and
+/// marks that are not icons: nothing is normalised or re-scaled here.
+pub fn paths(svg: &str) -> Vec<(Vec<Vec<Point>>, Option<Color>)> {
+    path_elements(svg).into_iter().map(|(d, fill)| (flatten(d), fill)).collect()
 }
 
 /// Every `d` attribute in an SVG, in document order.

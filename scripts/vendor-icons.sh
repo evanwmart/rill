@@ -38,6 +38,9 @@ pairs=(
     "skip-back skip-back"
     "skip-forward skip-forward"
     "speaker speaker-high"
+    "cloud-snow cloud-snow"
+    "cloud-fog cloud-fog"
+    "cloud-lightning cloud-lightning"
     "speaker-mute speaker-simple-slash"
     # Signage (the gate display): travel and weather glyphs.
     "plane airplane-tilt"
