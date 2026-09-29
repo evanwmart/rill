@@ -29,3 +29,6 @@ bench-results/
 /rust-audit-report.md
 /rust-files*.txt
 /opencode.json
+
+# Python bytecode from scripts/
+__pycache__/
