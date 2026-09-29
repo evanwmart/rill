@@ -105,3 +105,50 @@ budget, get killed" — confinement holds.
 Caveat: a wgpu backend is substantial renderer engineering (glyph atlases,
 batching, surfaces, compositing). gpui-first was correct — you don't build a
 compositor to render a notes app. It's the endgame, not the next step.
+
+
+## 5. The sky table — `[desktop] sky`
+
+The wallpaper can follow the real day without the compositor knowing
+anything about the sun or the weather. `[desktop] sky = "path"` names a
+TOML file of twenty-four rows:
+
+```toml
+sunrise = "06:41"          # informational
+sunset = "18:50"
+[[hour]]
+h = 0                       # 0..23, every hour present exactly once
+sky = "#05070f"             # the sky's colour at the top of the hour
+desat = 0.10                # atmospheric desaturation, 0..1
+```
+
+The compositor reloads it on mtime like the theme itself, samples it by
+the wall clock with a straight mix between neighbouring hours (23 wraps
+to 0), and uses the colour as the floor under a kiosk; the vector scene
+layers apply the same colour and desaturation by depth. Who writes the
+file is not the compositor's concern — the signage server's sky keeper
+does today (`apps/signage-app/src/sky.rs`: solar position for the site
+and date, then cloud, rain and visibility as desaturation with a small
+colour shift). A table with fewer than 24 hours, a repeated hour, or an
+unparseable colour is rejected whole and the previous one kept.
+
+The wallpaper that reads the table is `[desktop] wallpaper_scene = "path/scene.toml"`:
+an ordered list of `[[layer]]` entries, back to front, each an `svg`
+(paths with hex fills, one viewBox, cover-fitted to the output), a `depth`
+from 0 (foreground) to 1 (horizon) that says how far the layer's fills mix
+towards the sky colour and how strongly the haze desaturates them, and an
+optional `night = true` for layers that fade in as the sky's luminance
+drops and are gone by day (lit windows, streetlamps), or `on_below = D` to
+switch such a layer on as the sun's elevation falls below `D` degrees (10 is
+about an hour before sunset, 0 sunset, -8 an hour after), which is how a
+city lights up in stages. `when = "MM-DD"`, `"MM-DD..MM-DD"` (wrapping the
+year if needed), `"easter"` (the Sunday and two days before) or
+`"no-holiday"` (only when no dated layer matches today) draws a layer by the
+local date: holiday lights are extra light layers with a `when`, and the
+everyday set carries `no-holiday`. `RILL_DATE=MM-DD` on the compositor
+previews a date. The compositor
+flattens the SVGs once, repaints when the sky sample moves, and re-reads
+any SVG that changes on disk. A directory instead of a file is a scene
+too: every `*.svg` in name order, depths spaced from 0.9 to 0.1, night
+layers by name (`night`, `light`, `star`). `assets/scenes/morning/` is the
+placeholder set in that form.

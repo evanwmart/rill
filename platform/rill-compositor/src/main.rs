@@ -55,6 +55,7 @@ mod audio;
 mod drm_backend;
 mod history_writer;
 mod recorder;
+mod scene_layers;
 mod stream_protocol;
 
 use std::collections::HashMap;
@@ -1821,6 +1822,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // scene's bottom layer. `None` = clear color shows.
     let mut installed_wall: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
     let mut wall_tex: Option<TexBundle> = None;
+    // The sky table (`[desktop] sky`): reloaded on (path, mtime) like the
+    // wallpaper, sampled by the clock once a scene minute.
+    let mut installed_sky: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+    let mut sky_table: Option<SkyTable> = None;
+    let mut sky_now: Option<scene_layers::SkySample> = None;
+    // The vector wallpaper (`[desktop] wallpaper_scene`): loaded on (path, mtime) and
+    // re-read when any SVG it names changes; repainted at most once a
+    // minute, when the sky sample moves.
+    let mut installed_scene: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+    let mut vector_scene: Option<scene_layers::VectorScene> = None;
     let mut fx_animated = false;
     // Whether the per-window effect moves. Folded into the animation check
     // with the grader's: either one moving means the desktop cannot idle.
@@ -1837,6 +1848,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut window_param_decls: Vec<rill_appkit::params::ShaderParam> = Vec::new();
     let mut sent_param_rows: [Option<[[f32; 4]; 8]>; 3] = [None, None, None];
     let mut last_shader_check = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let mut last_sky_sample = std::time::Instant::now() - std::time::Duration::from_secs(1);
     // theme.toml's mtime when widget placements were last applied. Seeded
     // with the current stamp: at startup there are no widget windows yet, so
     // the first apply would be a no-op anyway.
@@ -1889,6 +1901,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(feature = "drm")]
             Presenter::Metal(_) => {}
         }
+        // The sky sample moves on its own clock: once a minute of scene
+        // time, which is 300 ms of wall time at most and, under
+        // `RILL_SKY_TIMELAPSE`, whatever a fake minute lasts. Sampling it
+        // on the theme tick tied the wallpaper's cadence to file polling.
+        if last_sky_sample.elapsed() > sky_sample_interval() {
+            last_sky_sample = std::time::Instant::now();
+            // Compared at the resolution the wallpaper repaints at (its
+            // cache key: colour, desaturation to the percent, the minute,
+            // elevation to a quarter degree), so a redraw is asked for only
+            // when something on screen can change — not every sample.
+            let sampled = sky_table.as_ref().map(|t| t.at(scene_clock_seconds()).quantised());
+            if sampled != sky_now {
+                sky_now = sampled;
+                if vector_scene.is_some() {
+                    state.needs_redraw = true;
+                }
+            }
+            let fx_conf = theme_desktop_fx_cached();
+            let next_clear = if state.kiosk() {
+                sky_now
+                    .map(|s| s.color)
+                    .or(fx_conf.kiosk_floor)
+                    .or(fx_conf.background_color)
+                    .unwrap_or(CLEAR_DEFAULT)
+            } else {
+                fx_conf.background_color.unwrap_or(CLEAR_DEFAULT)
+            };
+            if next_clear != clear_color {
+                clear_color = next_clear;
+                state.needs_redraw = true;
+            }
+        }
         if last_shader_check.elapsed() > std::time::Duration::from_millis(300) {
             last_shader_check = std::time::Instant::now();
             let fx_conf = theme_desktop_fx_cached();
@@ -1935,13 +1979,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 anims_enabled = fx_conf.animations;
                 state.needs_redraw = true;
             }
-            let next_clear = if state.kiosk() {
-                fx_conf.kiosk_floor.or(fx_conf.background_color).unwrap_or(CLEAR_DEFAULT)
-            } else {
-                fx_conf.background_color.unwrap_or(CLEAR_DEFAULT)
-            };
-            if next_clear != clear_color {
-                clear_color = next_clear;
+            // The sky table: the day's colour by the clock, from the file
+            // `[desktop] sky` names (the signage server's sky keeper writes
+            // it). Reloaded on (path, mtime); sampled every check, so the
+            // floor under a kiosk drifts with the hour and the scene layers
+            // will take the same two numbers.
+            let current_sky = fx_conf.sky.as_ref().and_then(|p| {
+                let mtime = std::fs::metadata(p).ok()?.modified().ok()?;
+                Some((p.clone(), mtime))
+            });
+            if current_sky != installed_sky {
+                sky_table = match &current_sky {
+                    Some((p, _)) => match SkyTable::load(p) {
+                        Ok(t) => {
+                            say!("sky table {}", p.display());
+                            Some(t)
+                        }
+                        Err(e) => {
+                            cry!("sky table rejected: {e}");
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                installed_sky = current_sky;
+                state.needs_redraw = true;
+            }
+            // The vector wallpaper: reload when the scene file moves or any
+            // SVG it names does. A reload that fails logs once and keeps the
+            // last good scene up until the files change again.
+            let current_scene = fx_conf.wallpaper_scene.as_ref().and_then(|p| {
+                let mtime = std::fs::metadata(p).ok()?.modified().ok()?;
+                Some((p.clone(), mtime))
+            });
+            let scene_moved = current_scene != installed_scene;
+            if scene_moved || vector_scene.as_ref().is_some_and(|sc| sc.stale()) {
+                match &current_scene {
+                    Some((p, _)) => match scene_layers::VectorScene::load(p) {
+                        Ok(sc) => {
+                            say!("scene {} ({} layers)", p.display(), sc.layer_count());
+                            vector_scene = Some(sc);
+                        }
+                        Err(e) => {
+                            cry!("scene rejected: {e}");
+                            match vector_scene.as_mut() {
+                                Some(old) if !scene_moved => old.refresh_stamps(),
+                                _ => vector_scene = None,
+                            }
+                        }
+                    },
+                    None => vector_scene = None,
+                }
+                installed_scene = current_scene;
                 state.needs_redraw = true;
             }
             // Widget placement is theme state too: when theme.toml moves,
@@ -2048,7 +2137,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let warp = fx_conf.warp;
             // A kiosk is the page, not a desktop: no grade, no vignette.
             // The theme's effect comes back when the kiosk unmaps.
-            let current = if state.kiosk() { None } else { fx_conf.shader.and_then(stamp) };
+            // A kiosk drops the desktop's effect (it greyed the gate board's
+            // white band) but may name its own — a static grain, say —
+            // under `[desktop.kiosk] shader`.
+            let current = if state.kiosk() {
+                fx_conf.kiosk_shader.and_then(stamp)
+            } else {
+                fx_conf.shader.and_then(stamp)
+            };
             if current != installed_shader {
                 match &current {
                     Some((p, _)) => match std::fs::read_to_string(p) {
@@ -2855,6 +2951,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // The kiosk's watermark: on the floor, under the window, wherever
         // the page lets the floor show.
+        // The vector wallpaper under everything, painted for this minute's
+        // sky; without a table it takes the floor colour.
+        let scene_cmds: &[DrawCommand] = match vector_scene.as_mut() {
+            Some(vs) => {
+                let sample = sky_now.unwrap_or(scene_layers::SkySample {
+                    color: clear_color,
+                    desat: 0.0,
+                    hour: scene_clock_seconds() / 3600.0,
+                    elevation: None,
+                    day_frac: None,
+                });
+                vs.commands(state.output_size.w as f32, state.output_size.h as f32, &sample)
+            }
+            None => &[],
+        };
         let mark_cmds = kiosk_mark_commands(&state, theme_desktop_fx_cached().kiosk_mark.as_ref());
         let mut scene: Vec<SceneLayer> = contents
             .iter()
@@ -2884,6 +2995,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         if !mark_cmds.is_empty() {
             scene.insert(0, SceneLayer::commands(&mark_cmds));
+        }
+        if !scene_cmds.is_empty() {
+            scene.insert(0, SceneLayer::commands(scene_cmds));
         }
         // Pixel wallpaper: the scene's bottom layer, cover-fitted — scaled
         // by the larger axis ratio and centred, so the image keeps its
@@ -4080,6 +4194,53 @@ fn truncate_title(title: &str) -> String {
 /// Where a new recording goes: `$XDG_DATA_HOME/rill/recordings/<secs>.rillrec`.
 /// Seconds since the epoch keeps names sortable and collision-free without
 /// pulling in a date library.
+/// The clock the sky and the scene run on: the wall clock, unless
+/// `RILL_SKY_TIMELAPSE=<seconds>` is set, in which case a whole day plays
+/// out in that many real seconds. A debug knob for watching the
+/// wallpaper's day in two minutes; never a mode.
+fn scene_clock_seconds() -> f32 {
+    match timelapse_period() {
+        // Wall clock modulo the period, so every process given the same
+        // period agrees on the fake hour with no coordination — the page
+        // server's clock runs the same formula.
+        Some(p) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            ((now % p) / p * 86_400.0) as f32
+        }
+        // `RILL_CLOCK_OFFSET=<seconds>`: real speed, shifted, so a demo can
+        // start at sunset. The page server applies the same offset to the
+        // same variable, so the two agree with no coordination.
+        None => (seconds_since_local_midnight() + clock_offset_seconds()).rem_euclid(86_400.0),
+    }
+}
+
+/// How often the sky is re-sampled: a real minute's worth of scene time
+/// is at most 300 ms of wall time, and in time-lapse it is one fake minute
+/// (83 ms for a two-minute day), floored at a frame.
+fn sky_sample_interval() -> std::time::Duration {
+    match timelapse_period() {
+        Some(p) => std::time::Duration::from_secs_f64((p / 1440.0).max(0.016)),
+        None => std::time::Duration::from_millis(300),
+    }
+}
+
+/// `RILL_CLOCK_OFFSET=<seconds>`, parsed once; 0 when unset or unusable.
+fn clock_offset_seconds() -> f32 {
+    static OFFSET: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| std::env::var("RILL_CLOCK_OFFSET").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0.0))
+}
+
+/// `RILL_SKY_TIMELAPSE=<seconds>`, parsed once; None when unset or unusable.
+fn timelapse_period() -> Option<f64> {
+    static PERIOD: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    *PERIOD.get_or_init(|| {
+        std::env::var("RILL_SKY_TIMELAPSE").ok().and_then(|v| v.parse::<f64>().ok()).filter(|p| *p > 0.0)
+    })
+}
+
 /// The wall clock as seconds since local midnight, for scene shaders with
 /// a time of day. localtime_r so the scene agrees with the user's timezone.
 fn seconds_since_local_midnight() -> f32 {
@@ -5392,6 +5553,19 @@ struct DesktopFx {
     /// what its page's translucent parts sit on, and what the mark is
     /// painted onto. A dark mark needs a floor lighter than itself.
     kiosk_floor: Option<UiColor>,
+    /// `[desktop] sky`: a table of the day's sky colour and atmospheric
+    /// desaturation by hour (specs/theming.md), written by whatever knows
+    /// the sun and the weather. Under a kiosk it is the floor; the scene
+    /// layers read the same two numbers.
+    sky: Option<std::path::PathBuf>,
+    /// `[desktop] wallpaper_scene`: a layered vector wallpaper
+    /// (`scene_layers.rs`), painted under every window from the sky
+    /// table's colour and desaturation. Sits above the pixel wallpaper
+    /// when both are set.
+    wallpaper_scene: Option<std::path::PathBuf>,
+    /// `[desktop.kiosk] shader`: the one effect a kiosk keeps. The desktop's
+    /// `shader` is cleared under a kiosk by design; this is the kiosk's own.
+    kiosk_shader: Option<std::path::PathBuf>,
 }
 
 /// A watermark behind the kiosk: an icon by name, its size, the angle it
@@ -5434,6 +5608,9 @@ impl Default for DesktopFx {
             shader_params: std::collections::HashMap::new(),
             kiosk_mark: None,
             kiosk_floor: None,
+            sky: None,
+            wallpaper_scene: None,
+            kiosk_shader: None,
         }
     }
 }
@@ -5579,6 +5756,90 @@ fn theme_path() -> std::path::PathBuf {
 /// `#rrggbb` or `#rrggbbaa` (leading `#` optional) as the compositor's
 /// colour type. Anything else is no colour — a theme typo keeps the
 /// default floor rather than painting garbage.
+/// The day's sky, by the hour: what `[desktop] sky` names. Twenty-four
+/// rows of colour and desaturation, sampled by the wall clock with a
+/// straight mix between neighbouring hours (23 wraps to 0). The file is
+/// the whole contract — who computed it, from what sun and what weather,
+/// is not the compositor's business.
+#[derive(Clone, Debug, PartialEq)]
+struct SkyTable {
+    /// Indexed by hour 0..24: colour, desaturation, solar elevation if given.
+    rows: Vec<(UiColor, f32, Option<f32>)>,
+    /// Sunrise and sunset as minutes after midnight, when the table has them.
+    daylight: Option<(f32, f32)>,
+}
+
+impl SkyTable {
+    fn load(path: &std::path::Path) -> Result<SkyTable, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        SkyTable::parse(&text)
+    }
+
+    fn parse(text: &str) -> Result<SkyTable, String> {
+        let root: toml::Value = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+        let hours = root
+            .get("hour")
+            .and_then(|v| v.as_array())
+            .ok_or("no [[hour]] rows")?;
+        let mut rows: Vec<Option<(UiColor, f32, Option<f32>)>> = vec![None; 24];
+        for row in hours {
+            let h = row.get("h").and_then(|v| v.as_integer()).ok_or("row without h")?;
+            if !(0..24).contains(&h) {
+                return Err(format!("hour {h} out of range"));
+            }
+            let sky = row
+                .get("sky")
+                .and_then(|v| v.as_str())
+                .and_then(parse_hex_color)
+                .ok_or_else(|| format!("hour {h}: bad sky colour"))?;
+            let desat = row
+                .get("desat")
+                .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+                .ok_or_else(|| format!("hour {h}: no desat"))? as f32;
+            let elevation = row
+                .get("elevation")
+                .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+                .map(|e| e as f32);
+            rows[h as usize] = Some((sky, desat.clamp(0.0, 1.0), elevation));
+        }
+        let rows: Option<Vec<_>> = rows.into_iter().collect();
+        let rows = rows.ok_or("fewer than 24 hours")?;
+        let hhmm = |k: &str| {
+            let v = root.get(k)?.as_str()?;
+            let (h, m) = v.split_once(':')?;
+            Some(h.parse::<f32>().ok()? * 60.0 + m.parse::<f32>().ok()?)
+        };
+        let daylight = match (hhmm("sunrise"), hhmm("sunset")) {
+            (Some(r), Some(s)) if s > r => Some((r, s)),
+            _ => None,
+        };
+        Ok(SkyTable { rows, daylight })
+    }
+
+    /// The sky at `secs` since local midnight: colour, desaturation and,
+    /// when the table carries it, the sun's elevation, each a straight mix
+    /// between the neighbouring hours.
+    fn at(&self, secs: f32) -> scene_layers::SkySample {
+        let hour = (secs / 3600.0).rem_euclid(24.0);
+        let i = hour.floor() as usize % 24;
+        let j = (i + 1) % 24;
+        let t = hour - hour.floor();
+        let (a, da, ea) = self.rows[i];
+        let (b, db, eb) = self.rows[j];
+        let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+        scene_layers::SkySample {
+            color: UiColor { r: mix(a.r, b.r), g: mix(a.g, b.g), b: mix(a.b, b.b), a: 255 },
+            desat: da + (db - da) * t,
+            hour,
+            elevation: match (ea, eb) {
+                (Some(x), Some(y)) => Some(x + (y - x) * t),
+                _ => None,
+            },
+            day_frac: self.daylight.map(|(rise, set)| (secs / 60.0 - rise) / (set - rise)),
+        }
+    }
+}
+
 fn parse_hex_color(s: &str) -> Option<UiColor> {
     let hex = s.trim().trim_start_matches('#');
     if !matches!(hex.len(), 6 | 8) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -5828,6 +6089,14 @@ fn theme_desktop_fx() -> DesktopFx {
             .and_then(|k| k.get("floor"))
             .and_then(|v| v.as_str())
             .and_then(parse_hex_color),
+        sky: desktop.get("sky").and_then(|v| v.as_str()).map(resolve),
+        wallpaper_scene: desktop.get("wallpaper_scene").and_then(|v| v.as_str()).map(resolve),
+        kiosk_shader: desktop
+            .get("kiosk")
+            .and_then(|v| v.as_table())
+            .and_then(|k| k.get("shader"))
+            .and_then(|v| v.as_str())
+            .map(resolve),
         kiosk_mark: desktop.get("kiosk").and_then(|v| v.as_table()).and_then(|k| {
             let num = |name: &str, d: f64| {
                 k.get(name).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(d)
@@ -6251,5 +6520,59 @@ mod frame_time_tests {
         }
         assert_eq!(std::mem::size_of_val(&t), before, "fixed size");
         assert_eq!(t.count, 100_000);
+    }
+}
+
+
+#[cfg(test)]
+mod sky_table_tests {
+    use super::*;
+
+    fn table(rows: impl Fn(u32) -> (&'static str, f32)) -> String {
+        let mut out = String::new();
+        for h in 0..24 {
+            let (sky, desat) = rows(h);
+            out.push_str(&format!("[[hour]]\nh = {h}\nsky = \"{sky}\"\ndesat = {desat}\n"));
+        }
+        out
+    }
+
+    #[test]
+    fn the_table_interpolates_by_the_minute_and_wraps_at_midnight() {
+        let text = table(|h| if h == 0 { ("#000000", 0.0) } else if h == 23 { ("#ffffff", 1.0) } else { ("#808080", 0.5) });
+        let t = SkyTable::parse(&text).expect("parses");
+        assert_eq!(t.at(0.0).color, UiColor { r: 0, g: 0, b: 0, a: 255 });
+        // Halfway from hour 0 (black) to hour 1 (grey).
+        let mid = t.at(1800.0);
+        assert_eq!(mid.color.r, 64);
+        assert!((mid.desat - 0.25).abs() < 1e-5);
+        assert_eq!(mid.elevation, None, "no elevation column in this table");
+        // 23:30 mixes hour 23 (white) with hour 0 (black), not hour 24.
+        let wrap = t.at(23.5 * 3600.0);
+        assert_eq!(wrap.color.r, 128);
+        assert!((wrap.desat - 0.5).abs() < 1e-5);
+        // Past 24h wraps too.
+        assert_eq!(t.at(24.0 * 3600.0).color, t.at(0.0).color);
+        // Elevation, when present, interpolates like the rest.
+        let with_elev = SkyTable::parse(&text.replace("desat = 0.5\n", "desat = 0.5\nelevation = 10\n").replace("desat = 0\n", "desat = 0\nelevation = -20\n")).expect("parses");
+        let e = with_elev.at(1800.0).elevation.unwrap();
+        assert!((e - (-5.0)).abs() < 1e-4, "{e}");
+        // Sunrise and sunset, when present, place the sun across the day.
+        assert_eq!(t.at(1800.0).day_frac, None);
+        let lit = SkyTable::parse(&format!("sunrise = \"06:00\"\nsunset = \"18:00\"\n{text}")).expect("parses");
+        assert!((lit.at(6.0 * 3600.0).day_frac.unwrap() - 0.0).abs() < 1e-5);
+        assert!((lit.at(12.0 * 3600.0).day_frac.unwrap() - 0.5).abs() < 1e-5);
+        assert!((lit.at(18.0 * 3600.0).day_frac.unwrap() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_short_or_malformed_table_is_refused() {
+        let mut short = table(|_| ("#123456", 0.1));
+        short = short.replace("h = 7\n", "h = 6\n"); // hour 7 missing, 6 twice
+        assert!(SkyTable::parse(&short).is_err());
+        assert!(SkyTable::parse("hour = 3").is_err());
+        assert!(SkyTable::parse(&table(|_| ("blue", 0.1))).is_err(), "bad colour");
+        let text = table(|_| ("#123456", 0.1));
+        assert!(SkyTable::parse(&text).is_ok());
     }
 }

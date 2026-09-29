@@ -1,0 +1,35 @@
+# Evan's Los Angeles: three distances, each a solid mass plus its facet
+# lines at the same depth. Sources scene-1..6.svg, baked by
+# scripts/bake-scene.py. `scale` and `y` compose a layer without redrawing:
+# scale is about the bottom centre of the output, y a fraction of its height.
+
+[sky]
+horizon = 0.62   # where the ridge line sits; the haze and the sun key off it
+haze = 0.24      # horizon haze band height, fraction of the output
+sun = true
+
+[[layer]]
+svg = "01-mountains.svg"
+depth = 0.9
+
+[[layer]]
+svg = "02-mountain-facets.svg"
+depth = 0.9
+
+[[layer]]
+svg = "03-skyline.svg"
+depth = 0.5
+scale = 0.62
+y = 0.04
+
+[[layer]]
+svg = "04-skyline-facets.svg"
+depth = 0.5
+scale = 0.62
+y = 0.04
+
+[[layer]]
+svg = "05-foreground.svg"
+depth = 0.1
+
+# 06-foreground-facets.svg: trace noise rather than lit faces; off for now.
