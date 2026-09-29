@@ -2647,7 +2647,7 @@ impl Renderer {
                         };
                         let faux_bold = smear > 0.0;
                         self.text_engine.with_font_system(|fs| {
-                            for pg in &placed {
+                            for pg in placed.iter() {
                                 let Some(slot) = atlas.slot(fs, &self.queue, pg.key, vary) else {
                                     continue;
                                 };

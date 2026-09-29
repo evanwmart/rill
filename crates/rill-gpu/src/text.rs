@@ -33,6 +33,8 @@ struct PrepKey {
 /// Two-phase text engine over cosmic-text (mirrors the gpui backend's
 /// `TextShaper`): `prepare` shapes a text once per (text, font, size) and
 /// caches per-segment advances; measurement is then pure arithmetic.
+/// `place_line` caches the same way on the drawing side, so a frame that
+/// shows the same lines as the last one shapes nothing.
 pub struct TextEngine {
     font_system: Mutex<FontSystem>,
     /// Lowercased installed family name → exact installed name.
@@ -48,7 +50,8 @@ pub struct TextEngine {
     /// rasterizer can produce that weight's real outlines instead of faking
     /// it. See [`TextEngine::has_variable_weight`].
     variable_weight: HashSet<String>,
-    cache: Mutex<ShapeCache>,
+    cache: Mutex<ByteCache<PrepKey, Prepared>>,
+    placed: Mutex<ByteCache<PlaceKey, Vec<PlacedGlyph>>>,
 }
 
 /// Shaped-text cache, bounded by bytes rather than by entry count.
@@ -61,38 +64,65 @@ pub struct TextEngine {
 ///
 /// This evicts the least recently used entries instead, and only down to a
 /// low-water mark, so a clear-and-refill storm cannot repeat every few frames.
-#[derive(Default)]
-struct ShapeCache {
-    entries: HashMap<PrepKey, (Arc<Prepared>, u64)>,
-    /// Sum of [`ShapeCache::entry_bytes`] over `entries`.
+///
+/// Two of these exist, one per half of the engine: `prepare` (advances, for
+/// measuring) and `place_line` (positioned glyphs, for drawing). The second
+/// came from a profile, not a hunch: with only the first in place, the
+/// compositor spent 39% of its main thread re-shaping every visible line
+/// on every frame (workstation, release, 2026-09-29, samply — see
+/// docs/cognitive-load-2026-09-28.md). Text on a display changes rarely;
+/// the work was almost all repeats.
+struct ByteCache<K, V> {
+    entries: HashMap<K, (Arc<V>, u64)>,
+    /// Sum of [`ByteCache::entry_bytes`] over `entries`.
     bytes: usize,
     /// Monotonic access stamp — cheaper than moving entries in a list, and
     /// exact enough for "which half of this is cold".
     clock: u64,
 }
 
-impl ShapeCache {
-    /// Roughly what one entry costs: the key's two strings and the shaped
-    /// segments. Ignores allocator overhead and the fixed struct sizes, which
-    /// are small beside the text for anything worth caching.
-    fn entry_bytes(key: &PrepKey, prepared: &Prepared) -> usize {
-        key.text.len()
-            + key.family.len()
-            + prepared.segments.len() * std::mem::size_of::<Segment>()
+/// What an entry costs, in the bytes that matter: the key's strings and the
+/// value's per-item payload. Ignores allocator overhead and the fixed struct
+/// sizes, which are small beside the text for anything worth caching.
+trait CacheCost {
+    fn cost(&self) -> usize;
+}
+
+impl CacheCost for PrepKey {
+    fn cost(&self) -> usize {
+        self.text.len() + self.family.len()
+    }
+}
+
+impl CacheCost for Prepared {
+    fn cost(&self) -> usize {
+        self.segments.len() * std::mem::size_of::<Segment>()
+    }
+}
+
+impl<K, V> Default for ByteCache<K, V> {
+    fn default() -> Self {
+        ByteCache { entries: HashMap::new(), bytes: 0, clock: 0 }
+    }
+}
+
+impl<K: Clone + Eq + std::hash::Hash + CacheCost, V: CacheCost> ByteCache<K, V> {
+    fn entry_bytes(key: &K, value: &V) -> usize {
+        key.cost() + value.cost()
     }
 
-    fn get(&mut self, key: &PrepKey) -> Option<Arc<Prepared>> {
+    fn get(&mut self, key: &K) -> Option<Arc<V>> {
         self.clock += 1;
         let clock = self.clock;
-        let (prepared, last_used) = self.entries.get_mut(key)?;
+        let (value, last_used) = self.entries.get_mut(key)?;
         *last_used = clock;
-        Some(prepared.clone())
+        Some(value.clone())
     }
 
-    fn insert(&mut self, key: PrepKey, prepared: Arc<Prepared>) {
+    fn insert(&mut self, key: K, value: Arc<V>) {
         self.clock += 1;
-        let cost = Self::entry_bytes(&key, &prepared);
-        if let Some((old, _)) = self.entries.insert(key.clone(), (prepared, self.clock)) {
+        let cost = Self::entry_bytes(&key, &value);
+        if let Some((old, _)) = self.entries.insert(key.clone(), (value, self.clock)) {
             self.bytes = self.bytes.saturating_sub(Self::entry_bytes(&key, &old));
         }
         self.bytes += cost;
@@ -102,15 +132,15 @@ impl ShapeCache {
         }
         // Oldest first, dropping to the low-water mark rather than merely
         // under budget — stopping at the line would evict again next insert.
-        let mut by_age: Vec<(u64, PrepKey)> =
+        let mut by_age: Vec<(u64, K)> =
             self.entries.iter().map(|(k, (_, used))| (*used, k.clone())).collect();
         by_age.sort_unstable_by_key(|(used, _)| *used);
         for (_, key) in by_age {
             if self.bytes <= Self::LOW_WATER {
                 break;
             }
-            if let Some((prepared, _)) = self.entries.remove(&key) {
-                self.bytes = self.bytes.saturating_sub(Self::entry_bytes(&key, &prepared));
+            if let Some((value, _)) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(Self::entry_bytes(&key, &value));
             }
         }
     }
@@ -205,7 +235,8 @@ impl TextEngine {
             default_family,
             serif_family,
             mono_family,
-            cache: Mutex::new(ShapeCache::default()),
+            cache: Mutex::new(ByteCache::default()),
+            placed: Mutex::new(ByteCache::default()),
         }
     }
 
@@ -437,6 +468,31 @@ pub(crate) struct PlacedGlyph {
     pub y: i32,
 }
 
+impl CacheCost for Vec<PlacedGlyph> {
+    fn cost(&self) -> usize {
+        self.len() * std::mem::size_of::<PlacedGlyph>()
+    }
+}
+
+/// Everything `place_line`'s output depends on. `grid` is here because it
+/// follows the *requested* family name (`mono`), not the resolved face: the
+/// mono face asked for by its own name draws at shaped advances, the same
+/// face asked for as `mono` draws on the cell grid.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PlaceKey {
+    text: String,
+    family: String,
+    weight: u16,
+    size_bits: u32,
+    grid: bool,
+}
+
+impl CacheCost for PlaceKey {
+    fn cost(&self) -> usize {
+        self.text.len() + self.family.len()
+    }
+}
+
 impl TextEngine {
     /// Run `f` with the font system locked (the atlas rasterizer needs it).
     pub(crate) fn with_font_system<R>(&self, f: impl FnOnce(&mut FontSystem) -> R) -> R {
@@ -445,23 +501,37 @@ impl TextEngine {
 
     /// Shape one already-wrapped line slice (no `\n`) and return its glyphs
     /// positioned relative to the line box's top-left, integer-snapped.
+    /// Cached per (slice, face, weight, size, grid): the caller asks for
+    /// every visible line on every frame, and nearly all of them are the
+    /// lines it asked for last frame.
     pub(crate) fn place_line(
         &self,
         text: &str,
         font_size: f32,
         font_weight: u16,
         font_family: &str,
-    ) -> Vec<PlacedGlyph> {
+    ) -> Arc<Vec<PlacedGlyph>> {
         if text.is_empty() {
-            return Vec::new();
+            return Arc::new(Vec::new());
         }
         let family = self.resolve(font_family).unwrap_or("sans-serif").to_string();
         // Same snap as measuring, or the glyphs drawn would come from a
         // different face than the widths that positioned them.
         let font_weight = self.nearest_weight(&family, font_weight);
+        let on_grid = self.is_mono(font_family);
+        let key = PlaceKey {
+            text: text.to_string(),
+            family: family.clone(),
+            weight: font_weight,
+            size_bits: font_size.to_bits(),
+            grid: on_grid,
+        };
+        if let Some(hit) = self.placed.lock().unwrap().get(&key) {
+            return hit;
+        }
         // The grid cell, before the font lock: mono_cell measures through
         // prepare, which takes the same lock.
-        let grid = self.is_mono(font_family).then(|| self.mono_cell(font_size, font_weight));
+        let grid = on_grid.then(|| self.mono_cell(font_size, font_weight));
         let mut fs = self.font_system.lock().unwrap();
         let mut buffer =
             Buffer::new(&mut fs, Metrics::new(font_size, font_size * LINE_HEIGHT_FACTOR));
@@ -528,7 +598,10 @@ impl TextEngine {
                 }
             }
         }
-        out
+        drop(fs);
+        let placed = Arc::new(out);
+        self.placed.lock().unwrap().insert(key, placed.clone());
+        placed
     }
 }
 
@@ -585,7 +658,7 @@ mod tests {
     /// empty itself and re-shape everything still on screen.
     #[test]
     fn the_shape_cache_is_bounded_by_bytes_and_evicts_the_coldest() {
-        let mut cache = ShapeCache::default();
+        let mut cache: ByteCache<PrepKey, Prepared> = ByteCache::default();
         let entry = |n: usize| {
             (
                 PrepKey {
@@ -608,7 +681,7 @@ mod tests {
             let (k, v) = entry(big + i); // distinct lengths => distinct keys
             cache.insert(k, v);
             assert!(
-                cache.bytes <= ShapeCache::BUDGET,
+                cache.bytes <= ByteCache::<PrepKey, Prepared>::BUDGET,
                 "over budget at {i}: {} bytes",
                 cache.bytes
             );
@@ -616,7 +689,24 @@ mod tests {
         // It really did evict — this pushed ~16 MiB through an 8 MiB cache.
         assert!(cache.entries.len() < 64, "nothing was evicted: {}", cache.entries.len());
         // And never emptied itself to get there.
-        assert!(cache.bytes > ShapeCache::LOW_WATER / 2, "cache cleared rather than trimmed");
+        assert!(cache.bytes > ByteCache::<PrepKey, Prepared>::LOW_WATER / 2, "cache cleared rather than trimmed");
+    }
+
+    /// The drawing half is cached like the measuring half: the second ask
+    /// for a line is the same allocation, and asking for the mono face on
+    /// the grid (`mono`) and off it (by name) are two entries, since the
+    /// glyph positions differ.
+    #[test]
+    fn placed_lines_are_cached_and_the_grid_is_part_of_the_key() {
+        let engine = TextEngine::new();
+        let a = engine.place_line("cache me", 16.0, 400, "sans-serif");
+        let b = engine.place_line("cache me", 16.0, 400, "sans-serif");
+        assert!(Arc::ptr_eq(&a, &b), "second placement re-shaped the line");
+        assert!(!a.is_empty());
+        let mono_name = engine.mono_family.clone().expect("bundled mono face registered");
+        let on_grid = engine.place_line("|_|", 16.0, 400, "mono");
+        let by_name = engine.place_line("|_|", 16.0, 400, &mono_name);
+        assert!(!Arc::ptr_eq(&on_grid, &by_name), "grid and shaped placements shared an entry");
     }
 
     #[test]
